@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   BarChart,
@@ -14,7 +14,7 @@ import {
 } from "recharts";
 import { Flame, Award, TrendingUp, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getDepartmentRankings, getItemRankings } from "@/lib/mockData";
+import { api, type DepartmentRanking, type ItemRanking } from "@/lib/api";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -33,8 +33,25 @@ type ViewMode = "departments" | "items";
 
 export default function Rankings() {
   const [viewMode, setViewMode] = useState<ViewMode>("departments");
-  const departmentRankings = getDepartmentRankings();
-  const itemRankings = getItemRankings();
+  const [departmentRankings, setDepartmentRankings] = useState<DepartmentRanking[]>([]);
+  const [itemRankings, setItemRankings] = useState<ItemRanking[]>([]);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const [departmentData, itemData] = await Promise.all([
+          api.getDepartmentRankings(),
+          api.getItemRankings(),
+        ]);
+        setDepartmentRankings(departmentData);
+        setItemRankings(itemData);
+      } catch (error) {
+        console.error("Error loading rankings:", error);
+      }
+    };
+
+    loadData();
+  }, []);
 
   // Status distribution for pie chart
   const statusDistribution = useMemo(() => {

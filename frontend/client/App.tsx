@@ -8,7 +8,6 @@ import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
 import { Sidebar } from "@/components/Sidebar";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
-import QuickLog from "./pages/QuickLog";
 import TaskLogs from "./pages/TaskLogs";
 import Reports from "./pages/Reports";
 import Rankings from "./pages/Rankings";
@@ -53,7 +52,6 @@ function AppContent() {
       <main className="flex-1 overflow-auto">
         <Routes>
           <Route path="/" element={<Index />} />
-          <Route path="/quick-log" element={<QuickLog />} />
           <Route path="/task-logs" element={<TaskLogs />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/rankings" element={<Rankings />} />

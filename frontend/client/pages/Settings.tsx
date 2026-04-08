@@ -14,21 +14,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import {
-  loadDepartments,
-  loadCategories,
-  loadStaff,
-  addDepartment,
-  updateDepartment,
-  deleteDepartment,
-  addCategory,
-  updateCategory,
-  deleteCategory,
-  addStaff,
-  updateStaff,
-  deleteStaff,
-  resetToDefaults,
-} from "@/lib/mockData";
+import { api, type Department, type Category, type Staff } from "@/lib/api";
 
 type TabType = "departments" | "categories" | "staff";
 
@@ -58,9 +44,9 @@ const itemVariants = {
 
 export default function Settings() {
   const [activeTab, setActiveTab] = useState<TabType>("departments");
-  const [departments, setDepartments] = useState<string[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [staff, setStaff] = useState<string[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [staff, setStaff] = useState<Staff[]>([]);
   const [newItem, setNewItem] = useState("");
   const [editingItem, setEditingItem] = useState<EditingItem | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
@@ -71,20 +57,54 @@ export default function Settings() {
     refreshData();
   }, []);
 
-  const refreshData = () => {
-    setDepartments(loadDepartments());
-    setCategories(loadCategories());
-    setStaff(loadStaff());
+  const refreshData = async () => {
+    try {
+      const [departmentsResponse, categoriesResponse, staffResponse] = await Promise.all([
+        api.getDepartmentsList(),
+        api.getCategoriesList(),
+        api.getStaffList(),
+      ]);
+
+      setDepartments(
+        !Array.isArray(departmentsResponse) && "data" in departmentsResponse
+          ? departmentsResponse.data
+          : []
+      );
+      setCategories(
+        !Array.isArray(categoriesResponse) && "data" in categoriesResponse
+          ? categoriesResponse.data
+          : []
+      );
+      setStaff(
+        !Array.isArray(staffResponse) && "data" in staffResponse
+          ? staffResponse.data
+          : []
+      );
+    } catch (error) {
+      console.error("Error loading settings data:", error);
+      toast.error("Failed to load settings data");
+    }
   };
 
   const getCurrentData = (): string[] => {
     switch (activeTab) {
       case "departments":
-        return departments;
+        return departments.map((item) => item.name);
       case "categories":
-        return categories;
+        return categories.map((item) => item.name);
       case "staff":
-        return staff;
+        return staff.map((item) => item.name);
+    }
+  };
+
+  const findCurrentItemByName = (name: string): Department | Category | Staff | undefined => {
+    switch (activeTab) {
+      case "departments":
+        return departments.find((item) => item.name === name);
+      case "categories":
+        return categories.find((item) => item.name === name);
+      case "staff":
+        return staff.find((item) => item.name === name);
     }
   };
 
@@ -110,90 +130,101 @@ export default function Settings() {
     }
   };
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newItem.trim()) {
       toast.error("Name cannot be empty");
       return;
     }
 
-    let result;
-    switch (activeTab) {
-      case "departments":
-        result = addDepartment(newItem);
-        break;
-      case "categories":
-        result = addCategory(newItem);
-        break;
-      case "staff":
-        result = addStaff(newItem);
-        break;
-    }
+    try {
+      switch (activeTab) {
+        case "departments":
+          await api.createDepartment(newItem.trim(), true);
+          break;
+        case "categories":
+          await api.createCategory(newItem.trim(), true);
+          break;
+        case "staff":
+          await api.createStaff({ name: newItem.trim(), active: true });
+          break;
+      }
 
-    if (result.success) {
-      toast.success(result.message);
-      refreshData();
+      toast.success(`${getTabLabel(activeTab).slice(0, -1)} added successfully`);
+      await refreshData();
       setNewItem("");
       setIsAddingNew(false);
-    } else {
-      toast.error(result.message);
+    } catch (error) {
+      console.error("Error adding setting item:", error);
+      toast.error("Failed to add item");
     }
   };
 
-  const handleUpdate = (oldName: string) => {
+  const handleUpdate = async (oldName: string) => {
     if (!editingItem || !editingItem.value.trim()) {
       toast.error("Name cannot be empty");
       return;
     }
 
-    let result;
-    switch (activeTab) {
-      case "departments":
-        result = updateDepartment(oldName, editingItem.value);
-        break;
-      case "categories":
-        result = updateCategory(oldName, editingItem.value);
-        break;
-      case "staff":
-        result = updateStaff(oldName, editingItem.value);
-        break;
+    const existingItem = findCurrentItemByName(oldName);
+    if (!existingItem) {
+      toast.error("Selected item no longer exists");
+      return;
     }
 
-    if (result.success) {
-      toast.success(result.message);
-      refreshData();
+    try {
+      switch (activeTab) {
+        case "departments":
+          await api.updateDepartment(existingItem.id, { name: editingItem.value.trim() });
+          break;
+        case "categories":
+          await api.updateCategory(existingItem.id, { name: editingItem.value.trim() });
+          break;
+        case "staff":
+          await api.updateStaff(existingItem.id, { name: editingItem.value.trim() });
+          break;
+      }
+
+      toast.success("Item updated successfully");
+      await refreshData();
       setEditingItem(null);
-    } else {
-      toast.error(result.message);
+    } catch (error) {
+      console.error("Error updating setting item:", error);
+      toast.error("Failed to update item");
     }
   };
 
-  const handleDelete = (name: string) => {
-    let result;
-    switch (activeTab) {
-      case "departments":
-        result = deleteDepartment(name);
-        break;
-      case "categories":
-        result = deleteCategory(name);
-        break;
-      case "staff":
-        result = deleteStaff(name);
-        break;
+  const handleDelete = async (name: string) => {
+    const existingItem = findCurrentItemByName(name);
+    if (!existingItem) {
+      toast.error("Selected item no longer exists");
+      return;
     }
 
-    if (result.success) {
-      toast.success(result.message);
-      refreshData();
+    try {
+      switch (activeTab) {
+        case "departments":
+          await api.deleteDepartment(existingItem.id);
+          break;
+        case "categories":
+          await api.deleteCategory(existingItem.id);
+          break;
+        case "staff":
+          await api.deleteStaff(existingItem.id);
+          break;
+      }
+
+      toast.success("Item deleted successfully");
+      await refreshData();
       setDeleteConfirm(null);
-    } else {
-      toast.error(result.message);
+    } catch (error) {
+      console.error("Error deleting setting item:", error);
+      toast.error("Failed to delete item");
     }
   };
 
   const handleReset = () => {
-    resetToDefaults();
     refreshData();
-    toast.success("All data reset to defaults");
+    toast.info("Reloaded latest data from server");
   };
 
   const tabs: TabType[] = ["departments", "categories", "staff"];
@@ -513,11 +544,11 @@ export default function Settings() {
             transition={{ delay: 0.2 }}
             className="mt-6 p-4 rounded-lg bg-primary/5 border border-primary/20"
           >
-            <p className="text-sm text-muted-foreground">
-              <span className="font-semibold text-foreground">Note:</span> Changes are saved automatically to your browser's local storage.
-              Use the "Reset to Defaults" button to restore the original data if needed.
-            </p>
-          </motion.div>
+              <p className="text-sm text-muted-foreground">
+                <span className="font-semibold text-foreground">Note:</span> Changes are saved to the server database.
+                Use "Reload data" to fetch the latest values.
+              </p>
+            </motion.div>
         </div>
       </div>
     </div>

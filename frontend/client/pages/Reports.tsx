@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import {
   BarChart,
@@ -15,15 +15,16 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { Calendar, TrendingUp, PieChartIcon, BarChart3 } from "lucide-react";
+import { Calendar, TrendingUp, PieChartIcon, BarChart3, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  getWeeklyTrendData,
-  getMonthlyTrendData,
-  getCategoryDistribution,
-  getDepartmentRankings,
-  getDashboardStats,
-} from "@/lib/mockData";
+  api,
+  type WeeklyTrend,
+  type MonthlyTrend,
+  type CategoryDistribution,
+  type DepartmentRanking,
+  type DashboardStats,
+} from "@/lib/api";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -42,12 +43,40 @@ type TimeRange = "weekly" | "monthly";
 
 export default function Reports() {
   const [timeRange, setTimeRange] = useState<TimeRange>("weekly");
+  const [isLoading, setIsLoading] = useState(true);
+  const [weeklyData, setWeeklyData] = useState<WeeklyTrend[]>([]);
+  const [monthlyData, setMonthlyData] = useState<MonthlyTrend[]>([]);
+  const [categoryData, setCategoryData] = useState<CategoryDistribution[]>([]);
+  const [departmentData, setDepartmentData] = useState<DepartmentRanking[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
 
-  const weeklyData = getWeeklyTrendData();
-  const monthlyData = getMonthlyTrendData();
-  const categoryData = getCategoryDistribution();
-  const departmentData = getDepartmentRankings();
-  const stats = getDashboardStats();
+  // Load data from API
+  const loadData = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      const [weekly, monthly, categories, departments, dashStats] = await Promise.all([
+        api.getWeeklyTrends(),
+        api.getMonthlyTrends(),
+        api.getCategoryDistribution(),
+        api.getDepartmentRankings(),
+        api.getDashboardStats(),
+      ]);
+
+      setWeeklyData(weekly);
+      setMonthlyData(monthly);
+      setCategoryData(categories);
+      setDepartmentData(departments);
+      setStats(dashStats);
+    } catch (error) {
+      console.error('Error loading report data:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const trendData = timeRange === "weekly" ? weeklyData : monthlyData;
   const trendXKey = timeRange === "weekly" ? "day" : "month";
@@ -252,10 +281,10 @@ export default function Reports() {
                 <PieChartIcon className="w-5 h-5 text-primary" />
                 Categorical Breakdown
               </h2>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="flex flex-col items-center">
                 {/* Pie Chart */}
-                <div className="lg:col-span-2">
-                  <ResponsiveContainer width="100%" height={280}>
+                <div className="w-full max-w-[280px]">
+                  <ResponsiveContainer width="100%" height={220}>
                     <PieChart>
                       <Pie
                         data={categoryData}
@@ -263,7 +292,8 @@ export default function Reports() {
                         cy="50%"
                         labelLine={false}
                         label={false}
-                        outerRadius={80}
+                        innerRadius={50}
+                        outerRadius={90}
                         fill="#8884d8"
                         dataKey="count"
                         nameKey="category"
@@ -289,35 +319,30 @@ export default function Reports() {
                   </ResponsiveContainer>
                 </div>
 
-                {/* Compact Legend */}
-                <div className="bg-muted/30 rounded-lg p-4 flex flex-col justify-center">
-                  <p className="text-xs font-semibold text-foreground mb-3 uppercase tracking-wider opacity-60">
-                    Legend
-                  </p>
-                  <div className="space-y-2.5">
-                    {categoryData.map((category) => (
-                      <motion.div
-                        key={category.category}
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        className="flex items-center gap-2.5 p-2 rounded-md hover:bg-muted/60 transition-colors cursor-pointer group"
-                        title={`${category.category}: ${category.count} tasks`}
-                      >
-                        <div
-                          className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                          style={{ backgroundColor: category.color }}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs font-medium text-foreground truncate group-hover:text-primary transition-colors">
-                            {category.category}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {category.percentage}%
-                          </p>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </div>
+                {/* Legend - Horizontal Grid */}
+                <div className="w-full mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {categoryData.map((category) => (
+                    <motion.div
+                      key={category.category}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/40 hover:bg-muted/60 transition-colors cursor-pointer"
+                      title={`${category.category}: ${category.count} tasks`}
+                    >
+                      <div
+                        className="w-3 h-3 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: category.color }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-foreground truncate">
+                          {category.category}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {category.percentage}%
+                        </p>
+                      </div>
+                    </motion.div>
+                  ))}
                 </div>
               </div>
             </div>

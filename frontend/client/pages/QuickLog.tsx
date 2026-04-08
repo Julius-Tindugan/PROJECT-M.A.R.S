@@ -3,18 +3,20 @@ import { motion } from "framer-motion";
 import { Plus, CheckCircle2, Clock, AlertCircle, User, Calendar, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import {
-  loadDepartments,
-  loadCategories,
-  loadStaff,
-  loadTasks,
-  saveTasks,
-  generateTaskId,
-  calculateDuration,
-  Task,
-  TaskStatus,
-  TaskPriority,
-} from "@/lib/mockData";
+import { api, type Task } from "@/lib/api";
+
+type TaskStatus = "Pending" | "In Progress" | "Completed";
+type TaskPriority = "Low" | "Medium" | "High" | "Critical";
+
+const calculateDuration = (startTime: string, endTime: string): string => {
+  if (!startTime || !endTime) return "N/A";
+  const start = new Date(`2000-01-01T${startTime}`);
+  const end = new Date(`2000-01-01T${endTime}`);
+  const diffMs = end.getTime() - start.getTime();
+  const hours = Math.floor(diffMs / 3600000);
+  const minutes = Math.floor((diffMs % 3600000) / 60000);
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+};
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -51,10 +53,26 @@ export default function QuickLog() {
   const [staffList, setStaffList] = useState<string[]>([]);
 
   useEffect(() => {
-    setDepartments(loadDepartments());
-    setCategories(loadCategories());
-    setStaffList(loadStaff());
-    setRecentTasks(loadTasks().slice(0, 5));
+    const loadData = async () => {
+      try {
+        const [deptResponse, catResponse, staffResponse, recentResponse] = await Promise.all([
+          api.getDepartmentsList({ names_only: true }),
+          api.getCategoriesList({ names_only: true }),
+          api.getStaffList({ names_only: true }),
+          api.getRecentTasks(5),
+        ]);
+
+        setDepartments(Array.isArray(deptResponse) ? deptResponse : []);
+        setCategories(Array.isArray(catResponse) ? catResponse : []);
+        setStaffList(Array.isArray(staffResponse) ? staffResponse : []);
+        setRecentTasks(recentResponse.data ?? []);
+      } catch (error) {
+        console.error("Error loading quick log data:", error);
+        toast.error("Failed to load form data");
+      }
+    };
+
+    loadData();
   }, []);
 
   const handleChange = (
@@ -74,35 +92,33 @@ export default function QuickLog() {
 
     setIsSubmitting(true);
 
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    try {
+      const response = await api.createTask({
+        description: formData.description,
+        department: formData.department,
+        category: formData.category,
+        staff: formData.staffName,
+        priority: formData.priority,
+        status: formData.status,
+        date: formData.date,
+        starttime: formData.startTime,
+        endtime: formData.endTime,
+        remarks: formData.remarks,
+      });
 
-    const newTask: Task = {
-      id: generateTaskId(),
-      description: formData.description,
-      department: formData.department,
-      category: formData.category,
-      staffName: formData.staffName,
-      priority: formData.priority,
-      status: formData.status,
-      date: formData.date,
-      startTime: formData.startTime,
-      endTime: formData.endTime,
-      remarks: formData.remarks,
-      createdAt: new Date().toISOString(),
-    };
-
-    const tasks = loadTasks();
-    tasks.unshift(newTask);
-    saveTasks(tasks);
-
-    setRecentTasks([newTask, ...recentTasks.slice(0, 4)]);
-
-    toast.success(`Task ${newTask.id} recorded successfully!`);
-    setFormData({
-      ...initialFormState,
-      date: new Date().toISOString().split("T")[0],
-    });
-    setIsSubmitting(false);
+      const newTask = response.data;
+      setRecentTasks((prev) => [newTask, ...prev.slice(0, 4)]);
+      toast.success(`Task ${newTask.id} recorded successfully!`);
+      setFormData({
+        ...initialFormState,
+        date: new Date().toISOString().split("T")[0],
+      });
+    } catch (error) {
+      console.error("Error recording task:", error);
+      toast.error("Failed to record task");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const getStatusIcon = (status: string) => {

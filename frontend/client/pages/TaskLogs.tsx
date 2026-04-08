@@ -1,24 +1,30 @@
-import { useState, useMemo, useEffect } from "react";
-import { motion } from "framer-motion";
-import { Search, ChevronUp, ChevronDown, ChevronsUpDown, Filter, Download, RefreshCw, Eye, User, Clock, CheckCircle2 } from "lucide-react";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Search, ChevronUp, ChevronDown, ChevronsUpDown, Filter, Download, RefreshCw, Eye, User, Clock, CheckCircle2, Pencil, X, Save, UserPlus, Building2, Tag, Calendar, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import {
-  loadTasks,
-  saveTasks,
-  loadDepartments,
-  loadCategories,
-  loadStaff,
-  Task,
-  TaskStatus,
-  calculateDuration,
-} from "@/lib/mockData";
+import { api, type Task } from "@/lib/api";
 
+// Type definitions
+type TaskStatus = 'Pending' | 'In Progress' | 'Completed';
+type TaskPriority = 'Low' | 'Medium' | 'High' | 'Critical';
 type SortKey = keyof Task;
 type SortOrder = "asc" | "desc";
 
 // Status options for dropdown
 const STATUS_OPTIONS: TaskStatus[] = ["Pending", "In Progress", "Completed"];
+const PRIORITY_OPTIONS: TaskPriority[] = ["Low", "Medium", "High", "Critical"];
+
+// Helper function to calculate duration between two times
+const calculateDuration = (startTime: string, endTime: string): string => {
+  if (!startTime || !endTime) return "N/A";
+  const start = new Date(`2000-01-01T${startTime}`);
+  const end = new Date(`2000-01-01T${endTime}`);
+  const diffMs = end.getTime() - start.getTime();
+  const hours = Math.floor(diffMs / 3600000);
+  const minutes = Math.floor((diffMs % 3600000) / 60000);
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+};
 
 export default function TaskLogs() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -30,21 +36,56 @@ export default function TaskLogs() {
   const [departmentFilter, setDepartmentFilter] = useState<string>("All");
   const [staffFilter, setStaffFilter] = useState<string>("All");
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editFormData, setEditFormData] = useState<Task | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Dynamic data
   const [departments, setDepartments] = useState<string[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [staffList, setStaffList] = useState<string[]>([]);
 
-  useEffect(() => {
-    setTasks(loadTasks());
-    setDepartments(loadDepartments());
-    setCategories(loadCategories());
-    setStaffList(loadStaff());
+  // Load data from API
+  const loadData = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      const [tasksResponse, deptResponse, catResponse, staffResponse] = await Promise.all([
+        api.getTasks({ paginate: false }),
+        api.getDepartmentsList({ names_only: true }),
+        api.getCategoriesList({ names_only: true }),
+        api.getStaffList({ names_only: true }),
+      ]);
+
+      // Extract tasks from response
+      const loadedTasks = 'data' in tasksResponse ? tasksResponse.data : [];
+      setTasks(loadedTasks);
+
+      // Handle department/category/staff responses (they return string[] when names_only is true)
+      setDepartments(Array.isArray(deptResponse) ? deptResponse : []);
+      setCategories(Array.isArray(catResponse) ? catResponse : []);
+      setStaffList(Array.isArray(staffResponse) ? staffResponse : []);
+    } catch (error) {
+      console.error('Error loading data:', error);
+      toast.error('Failed to load data from server');
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
-  const refreshTasks = () => {
-    setTasks(loadTasks());
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const refreshTasks = async () => {
+    try {
+      const tasksResponse = await api.getTasks({ paginate: false });
+      const loadedTasks = 'data' in tasksResponse ? tasksResponse.data : [];
+      setTasks(loadedTasks);
+      toast.success('Tasks refreshed');
+    } catch (error) {
+      console.error('Error refreshing tasks:', error);
+      toast.error('Failed to refresh tasks');
+    }
   };
 
   /**
@@ -53,74 +94,148 @@ export default function TaskLogs() {
    * - Auto-sets end time to current time if not already set
    * - If no start time exists, sets it to beginning of day
    * - Calculates and displays duration
-   *
-   * TODO (Backend): Sync status change with Laravel backend via API
-   * TODO (Backend): Log status change history for audit trail
-   * TODO (Backend): Send notification to relevant stakeholders
    */
-  const handleStatusChange = (taskId: string, newStatus: TaskStatus) => {
-    const updatedTasks = tasks.map((task) => {
-      if (task.id !== taskId) return task;
+  const handleStatusChange = async (taskId: string, newStatus: TaskStatus) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
 
-      const now = new Date();
-      const currentTime = now.toTimeString().slice(0, 5); // HH:MM format
+    const now = new Date();
+    const currentTime = now.toTimeString().slice(0, 5); // HH:MM format
 
-      let updatedTask = { ...task, status: newStatus };
+    let updatePayload: Record<string, string> = { status: newStatus };
+    let startTime = task.startTime;
+    let endTime = task.endTime;
 
-      // When marking as "Completed", auto-fill end time and calculate duration
+    // When marking as "Completed", auto-fill end time and calculate duration
+    if (newStatus === "Completed") {
+      if (!task.startTime) {
+        startTime = "08:00";
+        updatePayload.starttime = startTime;
+      }
+      if (!task.endTime) {
+        endTime = currentTime;
+        updatePayload.endtime = endTime;
+      }
+    }
+    // When changing to "In Progress", set start time if not exists
+    else if (newStatus === "In Progress" && !task.startTime) {
+      startTime = currentTime;
+      updatePayload.starttime = startTime;
+    }
+
+    try {
+      // Update via API using the database ID
+      await api.updateTask(task.dbId, updatePayload);
+
+      // Update local state
+      const updatedTask = { ...task, status: newStatus, startTime, endTime };
+      const updatedTasks = tasks.map(t => t.id === taskId ? updatedTask : t);
+      setTasks(updatedTasks);
+
+      // Show appropriate toast
       if (newStatus === "Completed") {
-        // If no start time, set to beginning of the task's date (08:00 as default work start)
-        if (!task.startTime) {
-          updatedTask.startTime = "08:00";
-        }
-
-        // Set end time to current time if not already set
-        if (!task.endTime) {
-          updatedTask.endTime = currentTime;
-        }
-
-        const duration = calculateDuration(updatedTask.startTime, updatedTask.endTime);
-
+        const duration = calculateDuration(startTime, endTime);
         toast.success(
           <div className="flex flex-col gap-1">
             <span className="font-semibold">Task {taskId} Completed!</span>
             <span className="text-sm opacity-90">
-              Duration: {duration} ({updatedTask.startTime} - {updatedTask.endTime})
+              Duration: {duration} ({startTime} - {endTime})
             </span>
           </div>,
           { duration: 4000 }
         );
-      }
-      // When changing to "In Progress", set start time if not exists
-      else if (newStatus === "In Progress" && !task.startTime) {
-        updatedTask.startTime = currentTime;
+      } else if (newStatus === "In Progress") {
         toast.success(`Task ${taskId} is now In Progress`, { duration: 2000 });
-      }
-      // When changing back to "Pending", optionally clear times
-      else if (newStatus === "Pending") {
+      } else if (newStatus === "Pending") {
         toast.info(`Task ${taskId} set to Pending`, { duration: 2000 });
-      }
-      else {
+      } else {
         toast.success(`Status updated to ${newStatus}`, { duration: 2000 });
       }
 
-      return updatedTask;
-    });
+      // Update selectedTask if it's the one being modified
+      if (selectedTask?.id === taskId) {
+        setSelectedTask(updatedTask);
+      }
+    } catch (error) {
+      console.error('Error updating task status:', error);
+      toast.error('Failed to update task status');
+    }
+  };
 
-    setTasks(updatedTasks);
-    saveTasks(updatedTasks);
+  // Open edit modal with task data
+  const handleEditClick = (task: Task) => {
+    setEditFormData({ ...task });
+    setIsEditMode(true);
+    setSelectedTask(task);
+  };
 
-    // Update selectedTask if it's the one being modified
-    if (selectedTask?.id === taskId) {
-      const updated = updatedTasks.find(t => t.id === taskId);
-      if (updated) setSelectedTask(updated);
+  // Handle form field changes in edit mode
+  const handleEditChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+  ) => {
+    const { name, value } = e.target;
+    setEditFormData((prev) => prev ? { ...prev, [name]: value } : null);
+  };
+
+  // Save edited task
+  const handleEditSave = async () => {
+    if (!editFormData) return;
+
+    // Validation
+    if (!editFormData.description || !editFormData.department || !editFormData.category || !editFormData.staffName) {
+      toast.error("Please fill in all required fields");
+      return;
     }
 
-    // TODO (Backend): API call to update task status
-    // await fetch(`/api/tasks/${taskId}/status`, {
-    //   method: 'PATCH',
-    //   body: JSON.stringify({ status: newStatus, endTime, startTime })
-    // });
+    try {
+      // Update via API using the database ID
+      await api.updateTask(editFormData.dbId, {
+        description: editFormData.description,
+        department: editFormData.department,
+        category: editFormData.category,
+        staff: editFormData.staffName,
+        priority: editFormData.priority,
+        status: editFormData.status,
+        requester: editFormData.requestedBy,
+        date: editFormData.date,
+        starttime: editFormData.startTime,
+        endtime: editFormData.endTime,
+        remarks: editFormData.remarks,
+      });
+
+      // Update local state
+      const updatedTasks = tasks.map((task) =>
+        task.id === editFormData.id ? editFormData : task
+      );
+
+      setTasks(updatedTasks);
+      setSelectedTask(editFormData);
+      setIsEditMode(false);
+
+      toast.success(
+        <div className="flex flex-col gap-1">
+          <span className="font-semibold">Task {editFormData.id} updated!</span>
+          <span className="text-sm opacity-90">Changes saved successfully</span>
+        </div>,
+        { duration: 3000 }
+      );
+    } catch (error) {
+      console.error('Error saving task:', error);
+      toast.error('Failed to save task changes');
+    }
+  };
+
+  // Cancel edit mode
+  const handleEditCancel = () => {
+    setIsEditMode(false);
+    setEditFormData(selectedTask);
+  };
+
+  // Close modal completely
+  const handleCloseModal = () => {
+    setSelectedTask(null);
+    setIsEditMode(false);
+    setEditFormData(null);
   };
 
   const filteredAndSortedTasks = useMemo(() => {
@@ -535,13 +650,22 @@ export default function TaskLogs() {
                         )}
                       </td>
                       <td className="px-3 py-2.5">
-                        <button
-                          onClick={() => setSelectedTask(task)}
-                          className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-primary"
-                          title="View Details"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setSelectedTask(task)}
+                            className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-primary"
+                            title="View Details"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleEditClick(task)}
+                            className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-blue-600"
+                            title="Edit Task"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                        </div>
                       </td>
                     </motion.tr>
                   ))}
@@ -570,165 +694,512 @@ export default function TaskLogs() {
         </motion.div>
       </div>
 
-      {/* Task Detail Modal */}
-      {selectedTask && (
-        <>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setSelectedTask(null)}
-            className="fixed inset-0 bg-black/50 z-40"
-          />
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            className="fixed inset-0 flex items-center justify-center p-4 z-50"
-          >
-            <div className="bg-card rounded-xl shadow-2xl max-w-lg w-full border border-border max-h-[90vh] overflow-auto">
-              <div className="p-5 border-b border-border flex items-center justify-between">
-                <h2 className="text-lg font-bold text-foreground">
-                  Task Details - {selectedTask.id}
-                </h2>
-                <button
-                  onClick={() => setSelectedTask(null)}
-                  className="p-2 hover:bg-muted rounded-lg transition-colors text-muted-foreground"
-                >
-                  <span className="sr-only">Close</span>
-                  &times;
-                </button>
-              </div>
-              <div className="p-5 space-y-4">
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    Description
-                  </label>
-                  <p className="text-sm text-foreground mt-1">{selectedTask.description}</p>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Department
-                    </label>
-                    <p className="text-sm text-foreground mt-1">{selectedTask.department}</p>
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Category
-                    </label>
-                    <p className="text-sm text-foreground mt-1">{selectedTask.category}</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Staff Name
-                    </label>
-                    <p className="text-sm text-foreground mt-1 flex items-center gap-1">
-                      <User className="w-4 h-4 text-primary" />
-                      {selectedTask.staffName}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Priority
-                    </label>
-                    <p className="mt-1">
-                      <span className={cn("px-2 py-1 rounded text-xs font-medium", getPriorityColor(selectedTask.priority))}>
-                        {selectedTask.priority}
-                      </span>
-                    </p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Status
-                    </label>
-                    <div className="mt-2">
-                      <select
-                        value={selectedTask.status}
-                        onChange={(e) => handleStatusChange(selectedTask.id, e.target.value as TaskStatus)}
-                        className={cn(
-                          getStatusSelectClass(selectedTask.status),
-                          "text-sm py-1.5"
-                        )}
-                        style={{
-                          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
-                          backgroundPosition: "right 6px center",
-                        }}
-                      >
-                        {STATUS_OPTIONS.map((status) => (
-                          <option key={status} value={status}>
-                            {status}
-                          </option>
-                        ))}
-                      </select>
+      {/* Task Detail/Edit Modal */}
+      <AnimatePresence>
+        {selectedTask && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={handleCloseModal}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="fixed inset-0 flex items-center justify-center p-4 z-50"
+            >
+              <div className="bg-card rounded-xl shadow-2xl max-w-2xl w-full border border-border max-h-[90vh] overflow-hidden flex flex-col">
+                {/* Modal Header */}
+                <div className="p-5 border-b border-border flex items-center justify-between bg-gradient-to-r from-primary/10 via-primary/5 to-transparent">
+                  <div className="flex items-center gap-3">
+                    <div className={cn(
+                      "p-2 rounded-lg",
+                      isEditMode ? "bg-blue-100 dark:bg-blue-900/30" : "bg-primary/10"
+                    )}>
+                      {isEditMode ? (
+                        <Pencil className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                      ) : (
+                        <Eye className="w-5 h-5 text-primary" />
+                      )}
+                    </div>
+                    <div>
+                      <h2 className="text-lg font-bold text-foreground">
+                        {isEditMode ? "Edit Task" : "Task Details"} - {selectedTask.id}
+                      </h2>
+                      <p className="text-xs text-muted-foreground">
+                        {isEditMode ? "Modify task information" : "View complete task information"}
+                      </p>
                     </div>
                   </div>
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Date
-                    </label>
-                    <p className="text-sm text-foreground mt-1">{formatDate(selectedTask.date)}</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Start Time
-                    </label>
-                    <p className="text-sm text-foreground mt-1">{formatTime(selectedTask.startTime)}</p>
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      End Time
-                    </label>
-                    <p className="text-sm text-foreground mt-1">{formatTime(selectedTask.endTime)}</p>
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Duration
-                    </label>
-                    <p className="text-sm font-semibold text-primary mt-1">
-                      {selectedTask.startTime && selectedTask.endTime
-                        ? calculateDuration(selectedTask.startTime, selectedTask.endTime)
-                        : "-"}
-                    </p>
-                  </div>
-                </div>
-                {selectedTask.remarks && (
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Remarks
-                    </label>
-                    <p className="text-sm text-foreground mt-1 p-3 rounded-lg bg-muted/50 border border-border">
-                      {selectedTask.remarks}
-                    </p>
-                  </div>
-                )}
-
-                {/* Quick Complete Button for non-completed tasks */}
-                {selectedTask.status !== "Completed" && (
-                  <div className="pt-3 border-t border-border">
+                  <div className="flex items-center gap-2">
+                    {!isEditMode && (
+                      <button
+                        onClick={() => handleEditClick(selectedTask)}
+                        className="p-2 rounded-lg hover:bg-muted transition-colors text-blue-600 hover:text-blue-700"
+                        title="Edit Task"
+                      >
+                        <Pencil className="w-5 h-5" />
+                      </button>
+                    )}
                     <button
-                      onClick={() => handleStatusChange(selectedTask.id, "Completed")}
-                      className={cn(
-                        "w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-all",
-                        "bg-green-500 text-white hover:bg-green-600"
-                      )}
+                      onClick={handleCloseModal}
+                      className="p-2 hover:bg-muted rounded-lg transition-colors text-muted-foreground hover:text-foreground"
                     >
-                      <CheckCircle2 className="w-4 h-4" />
-                      Mark as Completed
+                      <X className="w-5 h-5" />
                     </button>
                   </div>
-                )}
+                </div>
+
+                {/* Modal Content */}
+                <div className="p-5 space-y-4 overflow-y-auto flex-1">
+                  {isEditMode && editFormData ? (
+                    /* Edit Mode */
+                    <>
+                      {/* Description */}
+                      <div>
+                        <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                          <FileText className="w-3.5 h-3.5" />
+                          Description <span className="text-destructive">*</span>
+                        </label>
+                        <textarea
+                          name="description"
+                          value={editFormData.description}
+                          onChange={handleEditChange}
+                          rows={3}
+                          className={cn(
+                            "w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm",
+                            "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all resize-none"
+                          )}
+                        />
+                      </div>
+
+                      {/* Department & Category */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                            <Building2 className="w-3.5 h-3.5" />
+                            Department <span className="text-destructive">*</span>
+                          </label>
+                          <select
+                            name="department"
+                            value={editFormData.department}
+                            onChange={handleEditChange}
+                            className={cn(
+                              "w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm",
+                              "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                            )}
+                          >
+                            {departments.map((dept) => (
+                              <option key={dept} value={dept}>{dept}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                            <Tag className="w-3.5 h-3.5" />
+                            Category <span className="text-destructive">*</span>
+                          </label>
+                          <select
+                            name="category"
+                            value={editFormData.category}
+                            onChange={handleEditChange}
+                            className={cn(
+                              "w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm",
+                              "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                            )}
+                          >
+                            {categories.map((cat) => (
+                              <option key={cat} value={cat}>{cat}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Staff & Requested By */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                            <User className="w-3.5 h-3.5" />
+                            Assigned Staff <span className="text-destructive">*</span>
+                          </label>
+                          <select
+                            name="staffName"
+                            value={editFormData.staffName}
+                            onChange={handleEditChange}
+                            className={cn(
+                              "w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm",
+                              "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                            )}
+                          >
+                            {staffList.map((staff) => (
+                              <option key={staff} value={staff}>{staff}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                            <UserPlus className="w-3.5 h-3.5" />
+                            Requested By
+                          </label>
+                          <input
+                            type="text"
+                            name="requestedBy"
+                            value={editFormData.requestedBy || ""}
+                            onChange={handleEditChange}
+                            placeholder="Person who requested this task"
+                            className={cn(
+                              "w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm",
+                              "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                            )}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Priority & Status */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2 block">
+                            Priority
+                          </label>
+                          <div className="grid grid-cols-4 gap-1">
+                            {PRIORITY_OPTIONS.map((priority) => (
+                              <button
+                                key={priority}
+                                type="button"
+                                onClick={() => setEditFormData(prev => prev ? { ...prev, priority } : null)}
+                                className={cn(
+                                  "px-2 py-1.5 rounded-lg text-xs font-medium transition-all border",
+                                  editFormData.priority === priority
+                                    ? priority === "Critical"
+                                      ? "bg-red-500 text-white border-red-500"
+                                      : priority === "High"
+                                      ? "bg-orange-500 text-white border-orange-500"
+                                      : priority === "Medium"
+                                      ? "bg-amber-500 text-white border-amber-500"
+                                      : "bg-green-500 text-white border-green-500"
+                                    : "bg-background text-foreground border-input hover:border-primary/50"
+                                )}
+                              >
+                                {priority}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2 block">
+                            Status
+                          </label>
+                          <div className="grid grid-cols-3 gap-1">
+                            {STATUS_OPTIONS.map((status) => (
+                              <button
+                                key={status}
+                                type="button"
+                                onClick={() => setEditFormData(prev => prev ? { ...prev, status } : null)}
+                                className={cn(
+                                  "px-2 py-1.5 rounded-lg text-xs font-medium transition-all border",
+                                  editFormData.status === status
+                                    ? status === "Completed"
+                                      ? "bg-green-500 text-white border-green-500"
+                                      : status === "In Progress"
+                                      ? "bg-blue-500 text-white border-blue-500"
+                                      : "bg-amber-500 text-white border-amber-500"
+                                    : "bg-background text-foreground border-input hover:border-primary/50"
+                                )}
+                              >
+                                {status === "In Progress" ? "Progress" : status}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Date & Time */}
+                      <div className="grid grid-cols-3 gap-4">
+                        <div>
+                          <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                            <Calendar className="w-3.5 h-3.5" />
+                            Date
+                          </label>
+                          <input
+                            type="date"
+                            name="date"
+                            value={editFormData.date}
+                            onChange={handleEditChange}
+                            className={cn(
+                              "w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm",
+                              "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                            )}
+                          />
+                        </div>
+                        <div>
+                          <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                            <Clock className="w-3.5 h-3.5" />
+                            Start Time
+                          </label>
+                          <input
+                            type="time"
+                            name="startTime"
+                            value={editFormData.startTime}
+                            onChange={handleEditChange}
+                            className={cn(
+                              "w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm",
+                              "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                            )}
+                          />
+                        </div>
+                        <div>
+                          <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                            <Clock className="w-3.5 h-3.5" />
+                            End Time
+                          </label>
+                          <input
+                            type="time"
+                            name="endTime"
+                            value={editFormData.endTime}
+                            onChange={handleEditChange}
+                            className={cn(
+                              "w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm",
+                              "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                            )}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Duration Display */}
+                      {editFormData.startTime && editFormData.endTime && (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 border border-primary/20">
+                          <Clock className="w-4 h-4 text-primary" />
+                          <span className="text-sm text-foreground">Calculated Duration: </span>
+                          <span className="font-bold text-primary">
+                            {calculateDuration(editFormData.startTime, editFormData.endTime)}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Remarks */}
+                      <div>
+                        <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                          <FileText className="w-3.5 h-3.5" />
+                          Remarks
+                        </label>
+                        <textarea
+                          name="remarks"
+                          value={editFormData.remarks}
+                          onChange={handleEditChange}
+                          rows={2}
+                          placeholder="Additional notes or observations..."
+                          className={cn(
+                            "w-full px-3 py-2 rounded-lg border border-input bg-background text-foreground text-sm",
+                            "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all resize-none"
+                          )}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    /* View Mode */
+                    <>
+                      {/* Description */}
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          Description
+                        </label>
+                        <p className="text-sm text-foreground mt-1">{selectedTask.description}</p>
+                      </div>
+
+                      {/* Department & Category */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Department
+                          </label>
+                          <p className="text-sm text-foreground mt-1 flex items-center gap-1">
+                            <Building2 className="w-4 h-4 text-primary" />
+                            {selectedTask.department}
+                          </p>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Category
+                          </label>
+                          <p className="text-sm text-foreground mt-1 flex items-center gap-1">
+                            <Tag className="w-4 h-4 text-primary" />
+                            {selectedTask.category}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Staff & Requested By */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Assigned Staff
+                          </label>
+                          <p className="text-sm text-foreground mt-1 flex items-center gap-1">
+                            <User className="w-4 h-4 text-primary" />
+                            {selectedTask.staffName}
+                          </p>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Requested By
+                          </label>
+                          <p className="text-sm text-foreground mt-1 flex items-center gap-1">
+                            <UserPlus className="w-4 h-4 text-primary" />
+                            {selectedTask.requestedBy || <span className="text-muted-foreground italic">Not specified</span>}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Priority & Status */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Priority
+                          </label>
+                          <p className="mt-1">
+                            <span className={cn("px-2 py-1 rounded text-xs font-medium", getPriorityColor(selectedTask.priority))}>
+                              {selectedTask.priority}
+                            </span>
+                          </p>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Status
+                          </label>
+                          <div className="mt-2">
+                            <select
+                              value={selectedTask.status}
+                              onChange={(e) => handleStatusChange(selectedTask.id, e.target.value as TaskStatus)}
+                              className={cn(
+                                getStatusSelectClass(selectedTask.status),
+                                "text-sm py-1.5"
+                              )}
+                              style={{
+                                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
+                                backgroundPosition: "right 6px center",
+                              }}
+                            >
+                              {STATUS_OPTIONS.map((status) => (
+                                <option key={status} value={status}>
+                                  {status}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Date & Time */}
+                      <div className="grid grid-cols-4 gap-4">
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Date
+                          </label>
+                          <p className="text-sm text-foreground mt-1">{formatDate(selectedTask.date)}</p>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Start Time
+                          </label>
+                          <p className="text-sm text-foreground mt-1">{formatTime(selectedTask.startTime)}</p>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            End Time
+                          </label>
+                          <p className="text-sm text-foreground mt-1">{formatTime(selectedTask.endTime)}</p>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Duration
+                          </label>
+                          <p className="text-sm font-semibold text-primary mt-1">
+                            {selectedTask.startTime && selectedTask.endTime
+                              ? calculateDuration(selectedTask.startTime, selectedTask.endTime)
+                              : "-"}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Remarks */}
+                      {selectedTask.remarks && (
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Remarks
+                          </label>
+                          <p className="text-sm text-foreground mt-1 p-3 rounded-lg bg-muted/50 border border-border">
+                            {selectedTask.remarks}
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Modal Footer */}
+                <div className="p-4 border-t border-border bg-muted/30 flex items-center justify-between">
+                  {isEditMode ? (
+                    <>
+                      <button
+                        onClick={handleEditCancel}
+                        className={cn(
+                          "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
+                          "border border-input text-foreground hover:bg-muted"
+                        )}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleEditSave}
+                        className={cn(
+                          "flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-medium transition-all",
+                          "bg-primary text-primary-foreground hover:bg-primary/90 shadow-md"
+                        )}
+                      >
+                        <Save className="w-4 h-4" />
+                        Save Changes
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-xs text-muted-foreground">
+                        Created: {new Date(selectedTask.createdAt).toLocaleString()}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleEditClick(selectedTask)}
+                          className={cn(
+                            "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
+                            "border border-blue-300 text-blue-600 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-400 dark:hover:bg-blue-900/20"
+                          )}
+                        >
+                          <Pencil className="w-4 h-4" />
+                          Edit
+                        </button>
+                        {selectedTask.status !== "Completed" && (
+                          <button
+                            onClick={() => handleStatusChange(selectedTask.id, "Completed")}
+                            className={cn(
+                              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
+                              "bg-green-500 text-white hover:bg-green-600"
+                            )}
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            Complete
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
-          </motion.div>
-        </>
-      )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

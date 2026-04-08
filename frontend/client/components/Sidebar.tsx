@@ -15,7 +15,6 @@ import { ThemeSwitcher } from "./ThemeSwitcher";
 
 const navigationItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Quick Log", href: "/quick-log", icon: Monitor },
   { label: "Task Logs", href: "/task-logs", icon: FileText },
   { label: "Reports", href: "/reports", icon: PieChart },
   { label: "Rankings", href: "/rankings", icon: BarChart3 },

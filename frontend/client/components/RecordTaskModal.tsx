@@ -3,18 +3,20 @@ import { X, Clock, User, Calendar, FileText } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import {
-  loadDepartments,
-  loadCategories,
-  loadStaff,
-  loadTasks,
-  saveTasks,
-  generateTaskId,
-  calculateDuration,
-  Task,
-  TaskStatus,
-  TaskPriority,
-} from "@/lib/mockData";
+import { api } from "@/lib/api";
+
+type TaskStatus = "Pending" | "In Progress" | "Completed";
+type TaskPriority = "Low" | "Medium" | "High" | "Critical";
+
+const calculateDuration = (startTime: string, endTime: string): string => {
+  if (!startTime || !endTime) return "N/A";
+  const start = new Date(`2000-01-01T${startTime}`);
+  const end = new Date(`2000-01-01T${endTime}`);
+  const diffMs = end.getTime() - start.getTime();
+  const hours = Math.floor(diffMs / 3600000);
+  const minutes = Math.floor((diffMs % 3600000) / 60000);
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+};
 
 interface RecordTaskModalProps {
   isOpen: boolean;
@@ -44,13 +46,28 @@ export function RecordTaskModal({ isOpen, onClose }: RecordTaskModalProps) {
   // Load dynamic data and reset form when modal opens
   useEffect(() => {
     if (isOpen) {
-      setDepartments(loadDepartments());
-      setCategories(loadCategories());
-      setStaffList(loadStaff());
-      setFormData({
-        ...initialFormState,
-        date: new Date().toISOString().split("T")[0],
-      });
+      const loadData = async () => {
+        try {
+          const [deptResponse, catResponse, staffResponse] = await Promise.all([
+            api.getDepartmentsList({ names_only: true }),
+            api.getCategoriesList({ names_only: true }),
+            api.getStaffList({ names_only: true }),
+          ]);
+
+          setDepartments(Array.isArray(deptResponse) ? deptResponse : []);
+          setCategories(Array.isArray(catResponse) ? catResponse : []);
+          setStaffList(Array.isArray(staffResponse) ? staffResponse : []);
+          setFormData({
+            ...initialFormState,
+            date: new Date().toISOString().split("T")[0],
+          });
+        } catch (error) {
+          console.error("Error loading record task data:", error);
+          toast.error("Failed to load form data");
+        }
+      };
+
+      loadData();
     }
   }, [isOpen]);
 
@@ -73,28 +90,20 @@ export function RecordTaskModal({ isOpen, onClose }: RecordTaskModalProps) {
     setIsSubmitting(true);
 
     try {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-
-      const newTask: Task = {
-        id: generateTaskId(),
+      const response = await api.createTask({
         description: formData.description,
         department: formData.department,
         category: formData.category,
-        staffName: formData.staffName,
+        staff: formData.staffName,
         priority: formData.priority,
         status: formData.status,
         date: formData.date,
-        startTime: formData.startTime,
-        endTime: formData.endTime,
+        starttime: formData.startTime,
+        endtime: formData.endTime,
         remarks: formData.remarks,
-        createdAt: new Date().toISOString(),
-      };
+      });
 
-      const tasks = loadTasks();
-      tasks.unshift(newTask);
-      saveTasks(tasks);
-
-      toast.success(`Task ${newTask.id} recorded successfully!`);
+      toast.success(`Task ${response.data.id} recorded successfully!`);
       onClose();
     } catch (error) {
       toast.error("Failed to record task");
