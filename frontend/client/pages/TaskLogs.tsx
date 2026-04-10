@@ -4,15 +4,11 @@ import { Search, ChevronUp, ChevronDown, ChevronsUpDown, Filter, Download, Refre
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
-  loadTasks,
-  saveTasks,
-  loadDepartments,
-  loadCategories,
-  loadStaff,
+  api,
   Task,
   TaskStatus,
   calculateDuration,
-} from "@/lib/mockData";
+} from "@/lib/api";
 
 type SortKey = keyof Task;
 type SortOrder = "asc" | "desc";
@@ -30,22 +26,48 @@ export default function TaskLogs() {
   const [departmentFilter, setDepartmentFilter] = useState<string>("All");
   const [staffFilter, setStaffFilter] = useState<string>("All");
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Dynamic data
   const [departments, setDepartments] = useState<string[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [staffList, setStaffList] = useState<string[]>([]);
 
-  useEffect(() => {
-    setTasks(loadTasks());
-    setDepartments(loadDepartments());
-    setCategories(loadCategories());
-    setStaffList(loadStaff());
-  }, []);
+  const refreshTasks = async () => {
+    setIsRefreshing(true);
 
-  const refreshTasks = () => {
-    setTasks(loadTasks());
+    try {
+      const taskData = await api.getTasks();
+      setTasks(taskData);
+    } catch (error) {
+      console.error(error);
+      toast.error("Failed to load task logs");
+    } finally {
+      setIsRefreshing(false);
+    }
   };
+
+  const loadFilterData = async () => {
+    try {
+      const [departmentData, categoryData, staffData] = await Promise.all([
+        api.getDepartments(),
+        api.getCategories(),
+        api.getStaff(),
+      ]);
+
+      setDepartments(departmentData);
+      setCategories(categoryData);
+      setStaffList(staffData);
+    } catch (error) {
+      console.error(error);
+      toast.error("Failed to load filter data");
+    }
+  };
+
+  useEffect(() => {
+    refreshTasks();
+    loadFilterData();
+  }, []);
 
   /**
    * Handle status change for a task
@@ -54,73 +76,61 @@ export default function TaskLogs() {
    * - If no start time exists, sets it to beginning of day
    * - Calculates and displays duration
    *
-   * TODO (Backend): Sync status change with Laravel backend via API
-   * TODO (Backend): Log status change history for audit trail
-   * TODO (Backend): Send notification to relevant stakeholders
    */
-  const handleStatusChange = (taskId: string, newStatus: TaskStatus) => {
-    const updatedTasks = tasks.map((task) => {
-      if (task.id !== taskId) return task;
+  const handleStatusChange = async (taskId: string, newStatus: TaskStatus) => {
+    const task = tasks.find((item) => item.id === taskId);
+    if (!task) return;
 
-      const now = new Date();
-      const currentTime = now.toTimeString().slice(0, 5); // HH:MM format
+    const now = new Date();
+    const currentTime = now.toTimeString().slice(0, 5);
 
-      let updatedTask = { ...task, status: newStatus };
+    let startTime = task.startTime;
+    let endTime = task.endTime;
 
-      // When marking as "Completed", auto-fill end time and calculate duration
-      if (newStatus === "Completed") {
-        // If no start time, set to beginning of the task's date (08:00 as default work start)
-        if (!task.startTime) {
-          updatedTask.startTime = "08:00";
-        }
+    if (newStatus === "Completed") {
+      startTime = startTime || "08:00";
+      endTime = endTime || currentTime;
 
-        // Set end time to current time if not already set
-        if (!task.endTime) {
-          updatedTask.endTime = currentTime;
-        }
+      const duration = calculateDuration(startTime, endTime);
 
-        const duration = calculateDuration(updatedTask.startTime, updatedTask.endTime);
-
-        toast.success(
-          <div className="flex flex-col gap-1">
-            <span className="font-semibold">Task {taskId} Completed!</span>
-            <span className="text-sm opacity-90">
-              Duration: {duration} ({updatedTask.startTime} - {updatedTask.endTime})
-            </span>
-          </div>,
-          { duration: 4000 }
-        );
-      }
-      // When changing to "In Progress", set start time if not exists
-      else if (newStatus === "In Progress" && !task.startTime) {
-        updatedTask.startTime = currentTime;
-        toast.success(`Task ${taskId} is now In Progress`, { duration: 2000 });
-      }
-      // When changing back to "Pending", optionally clear times
-      else if (newStatus === "Pending") {
-        toast.info(`Task ${taskId} set to Pending`, { duration: 2000 });
-      }
-      else {
-        toast.success(`Status updated to ${newStatus}`, { duration: 2000 });
-      }
-
-      return updatedTask;
-    });
-
-    setTasks(updatedTasks);
-    saveTasks(updatedTasks);
-
-    // Update selectedTask if it's the one being modified
-    if (selectedTask?.id === taskId) {
-      const updated = updatedTasks.find(t => t.id === taskId);
-      if (updated) setSelectedTask(updated);
+      toast.success(
+        <div className="flex flex-col gap-1">
+          <span className="font-semibold">Task {taskId} Completed!</span>
+          <span className="text-sm opacity-90">
+            Duration: {duration} ({startTime} - {endTime})
+          </span>
+        </div>,
+        { duration: 4000 }
+      );
+    } else if (newStatus === "In Progress" && !startTime) {
+      startTime = currentTime;
+      toast.success(`Task ${taskId} is now In Progress`, { duration: 2000 });
+    } else if (newStatus === "Pending") {
+      toast.info(`Task ${taskId} set to Pending`, { duration: 2000 });
+    } else {
+      toast.success(`Status updated to ${newStatus}`, { duration: 2000 });
     }
 
-    // TODO (Backend): API call to update task status
-    // await fetch(`/api/tasks/${taskId}/status`, {
-    //   method: 'PATCH',
-    //   body: JSON.stringify({ status: newStatus, endTime, startTime })
-    // });
+    try {
+      const response = await api.updateTaskStatus(taskId, {
+        status: newStatus,
+        startTime: startTime || undefined,
+        endTime: endTime || undefined,
+      });
+
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === taskId ? response.task : currentTask
+        )
+      );
+
+      if (selectedTask?.id === taskId) {
+        setSelectedTask(response.task);
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Failed to update task status");
+    }
   };
 
   const filteredAndSortedTasks = useMemo(() => {
@@ -258,13 +268,14 @@ export default function TaskLogs() {
           <div className="flex items-center gap-2">
             <button
               onClick={refreshTasks}
+              disabled={isRefreshing}
               className={cn(
                 "flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all",
-                "border border-input text-foreground hover:bg-muted"
+                "border border-input text-foreground hover:bg-muted disabled:opacity-60 disabled:cursor-not-allowed"
               )}
             >
-              <RefreshCw className="w-4 h-4" />
-              Refresh
+              <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
+              {isRefreshing ? "Refreshing..." : "Refresh"}
             </button>
             <button
               className={cn(

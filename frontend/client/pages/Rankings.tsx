@@ -1,20 +1,26 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  BarChart,
   Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
 } from "recharts";
-import { Flame, Award, TrendingUp, AlertTriangle } from "lucide-react";
+import {
+  CalendarRange,
+  CheckCircle2,
+  Clock3,
+  ListTodo,
+  TrendingUp,
+  TriangleAlert,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getDepartmentRankings, getItemRankings } from "@/lib/mockData";
+import { api, MonthlyTrend, Task } from "@/lib/api";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -29,35 +35,311 @@ const itemVariants = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
 
-type ViewMode = "departments" | "items";
+const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+
+const TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+const formatSignedPercent = (value: number, digits = 0): string => {
+  if (!Number.isFinite(value)) {
+    return "0%";
+  }
+
+  const rounded = Number(value.toFixed(digits));
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded}%`;
+};
+
+const formatClockTime = (value: string): string => {
+  if (!value) {
+    return "Time not set";
+  }
+
+  const [hourText, minuteText] = value.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+
+  if (Number.isNaN(hour) || Number.isNaN(minute)) {
+    return "Time not set";
+  }
+
+  const date = new Date();
+  date.setHours(hour, minute, 0, 0);
+
+  return TIME_FORMATTER.format(date);
+};
+
+const formatTaskSchedule = (task: Task): string => {
+  if (task.startTime && task.endTime) {
+    return `${formatClockTime(task.startTime)} - ${formatClockTime(task.endTime)}`;
+  }
+
+  if (task.startTime) {
+    return `Starts ${formatClockTime(task.startTime)}`;
+  }
+
+  if (task.endTime) {
+    return `Ends ${formatClockTime(task.endTime)}`;
+  }
+
+  return "Time not set";
+};
+
+const parseDueAt = (task: Task): Date | null => {
+  if (!task.date) {
+    return null;
+  }
+
+  const fallbackTime = task.endTime || task.startTime || "23:59";
+  const dueAt = new Date(`${task.date}T${fallbackTime}:00`);
+
+  if (Number.isNaN(dueAt.getTime())) {
+    return null;
+  }
+
+  return dueAt;
+};
+
+const formatDurationFromMinutes = (totalMinutes: number): string => {
+  const absoluteMinutes = Math.abs(totalMinutes);
+  const days = Math.floor(absoluteMinutes / 1440);
+  const hours = Math.floor((absoluteMinutes % 1440) / 60);
+  const minutes = absoluteMinutes % 60;
+
+  if (days > 0) {
+    return `${days}d${hours > 0 ? ` ${hours}h` : ""}`;
+  }
+
+  if (hours > 0) {
+    return `${hours}h${minutes > 0 ? ` ${minutes}m` : ""}`;
+  }
+
+  return `${minutes}m`;
+};
+
+const formatTimingLabel = (minuteOffset: number): string => {
+  if (minuteOffset > 0) {
+    return `${formatDurationFromMinutes(minuteOffset)} overdue`;
+  }
+
+  if (minuteOffset < 0) {
+    return `Due in ${formatDurationFromMinutes(minuteOffset)}`;
+  }
+
+  return "Due now";
+};
+
+interface MonthlyKpiRow {
+  key: string;
+  label: string;
+  month: string;
+  tasks: number;
+  resolved: number;
+  pending: number;
+  completionRate: number;
+  variancePct: number;
+}
+
+interface PendingTaskNotice extends Task {
+  dueAt: Date;
+  minuteOffset: number;
+  urgencyLevel: "overdue" | "today" | "upcoming";
+  urgencyScore: number;
+}
 
 export default function Rankings() {
-  const [viewMode, setViewMode] = useState<ViewMode>("departments");
-  const departmentRankings = getDepartmentRankings();
-  const itemRankings = getItemRankings();
+  const [monthlyData, setMonthlyData] = useState<MonthlyTrend[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
 
-  // Status distribution for pie chart
-  const statusDistribution = useMemo(() => {
-    const totals = departmentRankings.reduce(
-      (acc, dept) => ({
-        resolved: acc.resolved + dept.resolved,
-        pending: acc.pending + dept.pending,
-        inProgress: acc.inProgress + dept.inProgress,
-      }),
-      { resolved: 0, pending: 0, inProgress: 0 }
+  useEffect(() => {
+    const fetchKpiData = async () => {
+      try {
+        const [monthlyTrendData, taskData] = await Promise.all([
+          api.getMonthlyTrends(),
+          api.getTasks(),
+        ]);
+
+        setMonthlyData(monthlyTrendData);
+        setTasks(taskData);
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    fetchKpiData();
+  }, []);
+
+  const monthlyKpiRows = useMemo<MonthlyKpiRow[]>(() => {
+    if (monthlyData.length === 0) {
+      return [];
+    }
+
+    const pendingByMonth = tasks.reduce<Record<string, number>>((accumulator, task) => {
+      if (task.status !== "Pending" || task.date.length < 7) {
+        return accumulator;
+      }
+
+      const monthKey = task.date.slice(0, 7);
+      accumulator[monthKey] = (accumulator[monthKey] ?? 0) + 1;
+
+      return accumulator;
+    }, {});
+
+    const referenceMonth = new Date();
+    referenceMonth.setDate(1);
+    referenceMonth.setHours(0, 0, 0, 0);
+
+    const baseRows = monthlyData.map((entry, index) => {
+      const monthDate = new Date(referenceMonth);
+      monthDate.setMonth(referenceMonth.getMonth() - (monthlyData.length - 1 - index));
+
+      const year = monthDate.getFullYear();
+      const monthNumber = String(monthDate.getMonth() + 1).padStart(2, "0");
+      const key = `${year}-${monthNumber}`;
+      const tasksCount = entry.tasks ?? 0;
+      const resolvedCount = entry.resolved ?? 0;
+      const pendingCount = pendingByMonth[key] ?? 0;
+
+      return {
+        key,
+        label: `${entry.month} ${year}`,
+        month: entry.month,
+        tasks: tasksCount,
+        resolved: resolvedCount,
+        pending: pendingCount,
+        completionRate: tasksCount > 0 ? Math.round((resolvedCount / tasksCount) * 100) : 0,
+        variancePct: 0,
+      };
+    });
+
+    const averageTasks =
+      baseRows.reduce((sum, row) => sum + row.tasks, 0) / Math.max(baseRows.length, 1);
+
+    return baseRows.map((row) => ({
+      ...row,
+      variancePct:
+        averageTasks > 0 ? ((row.tasks - averageTasks) / averageTasks) * 100 : 0,
+    }));
+  }, [monthlyData, tasks]);
+
+  const monthlySummary = useMemo(() => {
+    if (monthlyKpiRows.length === 0) {
+      return {
+        monthsAnalyzed: 0,
+        averageTasks: 0,
+        averageResolved: 0,
+        averagePending: 0,
+        currentMonthLabel: "Current month",
+        currentMonthTasks: 0,
+        monthOverMonthPct: 0,
+        currentVsAveragePct: 0,
+        busiestMonthLabel: "N/A",
+        busiestMonthTasks: 0,
+      };
+    }
+
+    const monthsAnalyzed = monthlyKpiRows.length;
+    const totalTasks = monthlyKpiRows.reduce((sum, row) => sum + row.tasks, 0);
+    const totalResolved = monthlyKpiRows.reduce((sum, row) => sum + row.resolved, 0);
+    const totalPending = monthlyKpiRows.reduce((sum, row) => sum + row.pending, 0);
+
+    const averageTasks = totalTasks / monthsAnalyzed;
+    const averageResolved = totalResolved / monthsAnalyzed;
+    const averagePending = totalPending / monthsAnalyzed;
+
+    const currentMonth = monthlyKpiRows[monthsAnalyzed - 1];
+    const previousMonth = monthsAnalyzed > 1 ? monthlyKpiRows[monthsAnalyzed - 2] : null;
+
+    const monthOverMonthPct = previousMonth
+      ? previousMonth.tasks > 0
+        ? ((currentMonth.tasks - previousMonth.tasks) / previousMonth.tasks) * 100
+        : currentMonth.tasks > 0
+        ? 100
+        : 0
+      : 0;
+
+    const currentVsAveragePct =
+      averageTasks > 0 ? ((currentMonth.tasks - averageTasks) / averageTasks) * 100 : 0;
+
+    const busiestMonth = monthlyKpiRows.reduce((best, current) =>
+      current.tasks > best.tasks ? current : best
     );
-    return [
-      { name: "Resolved", value: totals.resolved, color: "#10b981" },
-      { name: "In Progress", value: totals.inProgress, color: "#3b82f6" },
-      { name: "Pending", value: totals.pending, color: "#f59e0b" },
-    ];
-  }, [departmentRankings]);
 
-  // Chart colors
+    return {
+      monthsAnalyzed,
+      averageTasks,
+      averageResolved,
+      averagePending,
+      currentMonthLabel: currentMonth.label,
+      currentMonthTasks: currentMonth.tasks,
+      monthOverMonthPct,
+      currentVsAveragePct,
+      busiestMonthLabel: busiestMonth.label,
+      busiestMonthTasks: busiestMonth.tasks,
+    };
+  }, [monthlyKpiRows]);
+
+  const pendingNotices = useMemo<PendingTaskNotice[]>(() => {
+    const now = new Date();
+
+    const priorityWeight: Record<Task["priority"], number> = {
+      Low: 1,
+      Medium: 2,
+      High: 3,
+      Critical: 4,
+    };
+
+    return tasks
+      .filter((task) => task.status === "Pending")
+      .map((task) => {
+        const dueAt = parseDueAt(task);
+
+        if (!dueAt) {
+          return null;
+        }
+
+        const minuteOffset = Math.floor((now.getTime() - dueAt.getTime()) / 60000);
+        const dueToday =
+          dueAt.getFullYear() === now.getFullYear() &&
+          dueAt.getMonth() === now.getMonth() &&
+          dueAt.getDate() === now.getDate();
+
+        const urgencyLevel: PendingTaskNotice["urgencyLevel"] =
+          minuteOffset > 0 ? "overdue" : dueToday ? "today" : "upcoming";
+
+        const urgencyScore =
+          (urgencyLevel === "overdue" ? 5000 : urgencyLevel === "today" ? 2500 : 1000) +
+          priorityWeight[task.priority] * 100 -
+          Math.abs(minuteOffset);
+
+        return {
+          ...task,
+          dueAt,
+          minuteOffset,
+          urgencyLevel,
+          urgencyScore,
+        };
+      })
+      .filter((task): task is PendingTaskNotice => task !== null)
+      .sort((a, b) => b.urgencyScore - a.urgencyScore);
+  }, [tasks]);
+
+  const overdueCount = pendingNotices.filter((task) => task.urgencyLevel === "overdue").length;
+  const dueTodayCount = pendingNotices.filter((task) => task.urgencyLevel === "today").length;
+  const attentionNowCount = overdueCount + dueTodayCount;
+
   const colors = useMemo(
     () => ({
       border: "#e5e7eb",
       primary: "#f59e0b",
+      accent: "#10b981",
+      muted: "#3b82f6",
       foreground: "#1f2937",
       card: "#ffffff",
       mutedForeground: "#6b7280",
@@ -78,82 +360,21 @@ export default function Rankings() {
       }
     : colors;
 
-  const getHeatColor = (level: string) => {
-    switch (level) {
-      case "critical":
-        return "bg-red-500";
-      case "high":
-        return "bg-orange-500";
-      case "medium":
-        return "bg-yellow-500";
-      default:
-        return "bg-green-500";
-    }
-  };
-
-  const getHeatBadge = (level: string) => {
-    switch (level) {
-      case "critical":
-        return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 border border-red-200 dark:border-red-700";
-      case "high":
-        return "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 border border-orange-200 dark:border-orange-700";
-      case "medium":
-        return "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400 border border-yellow-200 dark:border-yellow-700";
-      default:
-        return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border border-green-200 dark:border-green-700";
-    }
-  };
-
-  const getRankBadge = (rank: number) => {
-    if (rank === 1) return "bg-yellow-400 text-yellow-900";
-    if (rank === 2) return "bg-gray-300 text-gray-700";
-    if (rank === 3) return "bg-amber-600 text-amber-100";
-    return "bg-primary text-primary-foreground";
-  };
-
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         className="sticky top-0 z-10 bg-background/95 backdrop-blur border-b border-border"
       >
-        <div className="px-6 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-foreground">Rankings</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Department and item report rankings with heat map
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setViewMode("departments")}
-              className={cn(
-                "px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                viewMode === "departments"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-foreground hover:bg-muted/80"
-              )}
-            >
-              Departments
-            </button>
-            <button
-              onClick={() => setViewMode("items")}
-              className={cn(
-                "px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                viewMode === "items"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-foreground hover:bg-muted/80"
-              )}
-            >
-              Items
-            </button>
-          </div>
+        <div className="px-6 py-4">
+          <h1 className="text-3xl font-bold text-foreground">Monthly KPI Analytics</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Average task volume per month with pending-task notification insights.
+          </p>
         </div>
       </motion.div>
 
-      {/* Content */}
       <div className="p-6">
         <motion.div
           variants={containerVariants}
@@ -161,79 +382,78 @@ export default function Rankings() {
           animate="visible"
           className="space-y-6"
         >
-          {/* Heat Map Legend */}
           <motion.div
             variants={itemVariants}
-            className="bg-card rounded-lg p-4 border border-border shadow-sm"
+            className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4"
           >
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div className="flex items-center gap-2">
-                <Flame className="w-5 h-5 text-primary" />
-                <span className="font-medium text-foreground">
-                  Heat Map Legend
+            <div className="bg-card rounded-lg border border-border p-4 shadow-sm">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Average Tasks / Month</p>
+              <div className="mt-2 flex items-center gap-2 text-foreground">
+                <TrendingUp className="w-4 h-4 text-primary" />
+                <span className="text-2xl font-bold">{monthlySummary.averageTasks.toFixed(1)}</span>
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Based on {monthlySummary.monthsAnalyzed} recent months
+              </p>
+            </div>
+
+            <div className="bg-card rounded-lg border border-border p-4 shadow-sm">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Average Resolved / Month</p>
+              <div className="mt-2 flex items-center gap-2 text-foreground">
+                <CheckCircle2 className="w-4 h-4 text-green-500" />
+                <span className="text-2xl font-bold">{monthlySummary.averageResolved.toFixed(1)}</span>
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Sustained completion throughput
+              </p>
+            </div>
+
+            <div className="bg-card rounded-lg border border-border p-4 shadow-sm">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Average Pending / Month</p>
+              <div className="mt-2 flex items-center gap-2 text-foreground">
+                <ListTodo className="w-4 h-4 text-amber-500" />
+                <span className="text-2xl font-bold">{monthlySummary.averagePending.toFixed(1)}</span>
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Unresolved task load trend
+              </p>
+            </div>
+
+            <div className="bg-card rounded-lg border border-border p-4 shadow-sm">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Current vs Average</p>
+              <div className="mt-2 flex items-center gap-2 text-foreground">
+                <CalendarRange className="w-4 h-4 text-blue-500" />
+                <span
+                  className={cn(
+                    "text-2xl font-bold",
+                    monthlySummary.currentVsAveragePct >= 0 ? "text-green-600" : "text-red-600"
+                  )}
+                >
+                  {formatSignedPercent(monthlySummary.currentVsAveragePct, 1)}
                 </span>
               </div>
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded bg-red-500" />
-                  <span className="text-sm text-muted-foreground">
-                    Critical (40+)
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded bg-orange-500" />
-                  <span className="text-sm text-muted-foreground">
-                    High (30-39)
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded bg-yellow-500" />
-                  <span className="text-sm text-muted-foreground">
-                    Medium (20-29)
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded bg-green-500" />
-                  <span className="text-sm text-muted-foreground">
-                    Low (&lt;20)
-                  </span>
-                </div>
-              </div>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {monthlySummary.currentMonthLabel}
+              </p>
             </div>
           </motion.div>
 
-          {/* Charts */}
           <motion.div
             variants={itemVariants}
-            className="grid grid-cols-1 lg:grid-cols-2 gap-6"
+            className="grid grid-cols-1 xl:grid-cols-3 gap-6"
           >
-            {/* Reports by Department/Items */}
-            <div className="bg-card rounded-lg p-6 border border-border shadow-sm">
+            <div className="xl:col-span-2 bg-card rounded-lg p-6 border border-border shadow-sm">
               <h2 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
                 <TrendingUp className="w-5 h-5 text-primary" />
-                {viewMode === "departments"
-                  ? "Total Reports by Department"
-                  : "Top Reported Items"}
+                Monthly Tasks vs Resolution
               </h2>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart
-                  data={
-                    viewMode === "departments"
-                      ? departmentRankings
-                      : itemRankings
-                  }
-                >
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke={chartColors.border}
-                  />
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={monthlyKpiRows}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={chartColors.border} />
                   <XAxis
-                    dataKey={viewMode === "departments" ? "department" : "item"}
+                    dataKey="month"
                     stroke={chartColors.mutedForeground}
-                    style={{ fontSize: "10px" }}
-                    angle={-45}
-                    textAnchor="end"
-                    height={100}
+                    style={{ fontSize: "12px" }}
                   />
                   <YAxis
                     stroke={chartColors.mutedForeground}
@@ -247,272 +467,159 @@ export default function Rankings() {
                       color: chartColors.foreground,
                     }}
                     labelStyle={{ color: chartColors.foreground }}
+                    formatter={(value: number, name: string) => {
+                      if (name === "pending") {
+                        return [value, "Pending"];
+                      }
+
+                      return [value, name === "tasks" ? "Tasks" : "Resolved"];
+                    }}
                   />
-                  <Bar
-                    dataKey={
-                      viewMode === "departments" ? "totalReports" : "reportCount"
-                    }
-                    fill={chartColors.primary}
-                    radius={[8, 8, 0, 0]}
+                  <ReferenceLine
+                    y={monthlySummary.averageTasks}
+                    stroke={chartColors.muted}
+                    strokeDasharray="6 6"
+                    label={{
+                      value: `Avg ${monthlySummary.averageTasks.toFixed(1)}`,
+                      fill: chartColors.mutedForeground,
+                      position: "insideTopRight",
+                    }}
+                  />
+                  <Bar dataKey="tasks" fill={chartColors.primary} radius={[8, 8, 0, 0]} />
+                  <Bar dataKey="resolved" fill={chartColors.accent} radius={[8, 8, 0, 0]} />
+                  <Line
+                    type="monotone"
+                    dataKey="pending"
+                    stroke={chartColors.muted}
+                    strokeWidth={2}
+                    dot={{ fill: chartColors.muted, r: 4 }}
+                    activeDot={{ r: 6 }}
                   />
                 </BarChart>
               </ResponsiveContainer>
             </div>
 
-            {/* Status Distribution */}
             <div className="bg-card rounded-lg p-6 border border-border shadow-sm">
-              <h2 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
-                <Award className="w-5 h-5 text-primary" />
-                Overall Status Distribution
+              <h2 className="text-lg font-semibold text-foreground mb-2 flex items-center gap-2">
+                <TriangleAlert className="w-5 h-5 text-primary" />
+                Pending Notifications
               </h2>
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={statusDistribution}
-                    cx="50%"
-                    cy="50%"
-                    labelLine={false}
-                    label={({ name, value, percent }) =>
-                      `${name}: ${value} (${(percent * 100).toFixed(0)}%)`
-                    }
-                    outerRadius={90}
-                    fill="#8884d8"
-                    dataKey="value"
-                  >
-                    {statusDistribution.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: chartColors.card,
-                      border: `1px solid ${chartColors.border}`,
-                      borderRadius: "8px",
-                      color: chartColors.foreground,
-                    }}
-                    labelStyle={{ color: chartColors.foreground }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          </motion.div>
+              <p className="text-sm text-muted-foreground">
+                {attentionNowCount} tasks need attention now ({overdueCount} overdue, {dueTodayCount} due today).
+              </p>
 
-          {/* Heat Map Grid */}
-          <motion.div
-            variants={itemVariants}
-            className="bg-card rounded-lg p-6 border border-border shadow-sm"
-          >
-            <h2 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
-              <Flame className="w-5 h-5 text-primary" />
-              Department Heat Map
-            </h2>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {departmentRankings.map((dept, index) => (
-                <motion.div
-                  key={dept.department}
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: index * 0.05 }}
-                  className={cn(
-                    "relative p-4 rounded-lg border border-border",
-                    "hover:shadow-md transition-all cursor-pointer group"
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "absolute inset-0 rounded-lg opacity-20",
-                      getHeatColor(dept.heatLevel)
-                    )}
-                  />
-                  <div className="relative">
-                    <p className="text-xs text-muted-foreground line-clamp-1">
-                      {dept.department}
-                    </p>
-                    <p className="text-2xl font-bold text-foreground mt-1">
-                      {dept.totalReports}
-                    </p>
-                    <span
+              {pendingNotices.length === 0 ? (
+                <div className="mt-4 rounded-lg border border-green-500/20 bg-green-500/5 p-3 text-sm text-green-700 dark:text-green-400">
+                  No pending tasks with schedule data.
+                </div>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {pendingNotices.slice(0, 6).map((task) => (
+                    <div
+                      key={task.id}
                       className={cn(
-                        "inline-block mt-2 px-2 py-0.5 rounded text-xs font-medium",
-                        getHeatBadge(dept.heatLevel)
+                        "rounded-lg border p-3",
+                        task.urgencyLevel === "overdue"
+                          ? "border-red-300/70 bg-red-500/5"
+                          : task.urgencyLevel === "today"
+                          ? "border-amber-300/70 bg-amber-500/5"
+                          : "border-border bg-background"
                       )}
                     >
-                      {dept.heatLevel.toUpperCase()}
-                    </span>
-                  </div>
-                </motion.div>
-              ))}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-primary">{task.id}</p>
+                          <p className="line-clamp-1 text-sm text-foreground">{task.description}</p>
+                        </div>
+                        <span className="text-[10px] font-semibold text-muted-foreground">{task.priority}</span>
+                      </div>
+                      <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                        <div className="flex items-center gap-2">
+                          <CalendarRange className="w-3.5 h-3.5" />
+                          <span>
+                            {DATE_FORMATTER.format(task.dueAt)} at {TIME_FORMATTER.format(task.dueAt)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Clock3 className="w-3.5 h-3.5" />
+                          <span>{formatTaskSchedule(task)}</span>
+                          <span className="text-border">|</span>
+                          <span
+                            className={cn(
+                              task.urgencyLevel === "overdue" && "font-semibold text-red-600",
+                              task.urgencyLevel === "today" && "font-semibold text-amber-600"
+                            )}
+                          >
+                            {formatTimingLabel(task.minuteOffset)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </motion.div>
 
-          {/* Rankings Table */}
           <motion.div
             variants={itemVariants}
-            className="bg-card rounded-lg border border-border overflow-hidden shadow-sm"
+            className="bg-card rounded-lg border border-border shadow-sm overflow-hidden"
           >
-            <div className="p-6 border-b border-border flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-primary" />
-                <h2 className="text-lg font-semibold text-foreground">
-                  {viewMode === "departments"
-                    ? "Department Leaderboard"
-                    : "Items Leaderboard"}
-                </h2>
+            <div className="p-6 border-b border-border flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-foreground">Monthly KPI Breakdown</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Month-by-month comparison against average monthly task volume.
+                </p>
               </div>
-              <p className="text-sm text-muted-foreground">
-                Ranked by report volume (highest to lowest)
-              </p>
+              <span className="text-sm text-muted-foreground">
+                Busiest: {monthlySummary.busiestMonthLabel} ({monthlySummary.busiestMonthTasks} tasks)
+              </span>
             </div>
-            <div className="overflow-x-auto">
-              {viewMode === "departments" ? (
-                <table className="w-full">
+
+            {monthlyKpiRows.length === 0 ? (
+              <div className="p-6 text-sm text-muted-foreground">
+                No monthly task trend data yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px]">
                   <thead className="bg-muted/50 border-b border-border">
                     <tr>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Rank
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Department
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Total Reports
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Resolved
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        In Progress
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Pending
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Avg Resolution
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Heat Level
-                      </th>
+                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Month</th>
+                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Tasks</th>
+                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Resolved</th>
+                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Pending</th>
+                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Completion</th>
+                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Vs Avg</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {departmentRankings.map((dept, index) => (
-                      <motion.tr
-                        key={dept.department}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: index * 0.05 }}
-                        className="hover:bg-muted/30 transition-colors"
-                      >
-                        <td className="px-6 py-4">
-                          <div className="flex items-center justify-center">
-                            <div
-                              className={cn(
-                                "w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm",
-                                getRankBadge(dept.rank)
-                              )}
-                            >
-                              {dept.rank}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-sm font-medium text-foreground">
-                          {dept.department}
-                        </td>
-                        <td className="px-6 py-4 text-sm text-foreground font-semibold">
-                          {dept.totalReports}
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          <span className="px-2 py-1 rounded bg-green-500/20 text-green-700 dark:text-green-400 text-xs font-medium">
-                            {dept.resolved}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          <span className="px-2 py-1 rounded bg-blue-500/20 text-blue-700 dark:text-blue-400 text-xs font-medium">
-                            {dept.inProgress}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          <span className="px-2 py-1 rounded bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 text-xs font-medium">
-                            {dept.pending}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-sm text-muted-foreground">
-                          {dept.avgResolutionTime}
-                        </td>
+                    {monthlyKpiRows.map((row) => (
+                      <tr key={row.key} className="hover:bg-muted/30 transition-colors">
+                        <td className="px-6 py-4 text-sm font-medium text-foreground">{row.label}</td>
+                        <td className="px-6 py-4 text-sm font-semibold text-foreground">{row.tasks}</td>
+                        <td className="px-6 py-4 text-sm text-green-700 dark:text-green-400">{row.resolved}</td>
+                        <td className="px-6 py-4 text-sm text-amber-700 dark:text-amber-400">{row.pending}</td>
+                        <td className="px-6 py-4 text-sm text-foreground">{row.completionRate}%</td>
                         <td className="px-6 py-4 text-sm">
                           <span
                             className={cn(
-                              "px-3 py-1 rounded-full text-xs font-medium",
-                              getHeatBadge(dept.heatLevel)
+                              "rounded px-2 py-1 text-xs font-semibold",
+                              row.variancePct >= 0
+                                ? "bg-green-500/10 text-green-700 dark:text-green-400"
+                                : "bg-red-500/10 text-red-700 dark:text-red-400"
                             )}
                           >
-                            {dept.heatLevel.toUpperCase()}
+                            {formatSignedPercent(row.variancePct, 1)}
                           </span>
                         </td>
-                      </motion.tr>
+                      </tr>
                     ))}
                   </tbody>
                 </table>
-              ) : (
-                <table className="w-full">
-                  <thead className="bg-muted/50 border-b border-border">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Rank
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Item
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Category
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Report Count
-                      </th>
-                      <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">
-                        Last Reported
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {itemRankings.map((item, index) => (
-                      <motion.tr
-                        key={item.item}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: index * 0.05 }}
-                        className="hover:bg-muted/30 transition-colors"
-                      >
-                        <td className="px-6 py-4">
-                          <div className="flex items-center justify-center">
-                            <div
-                              className={cn(
-                                "w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm",
-                                getRankBadge(item.rank)
-                              )}
-                            >
-                              {item.rank}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-sm font-medium text-foreground">
-                          {item.item}
-                        </td>
-                        <td className="px-6 py-4 text-sm text-muted-foreground">
-                          {item.category}
-                        </td>
-                        <td className="px-6 py-4 text-sm text-foreground font-semibold">
-                          {item.reportCount}
-                        </td>
-                        <td className="px-6 py-4 text-sm text-muted-foreground">
-                          {item.lastReported}
-                        </td>
-                      </motion.tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+              </div>
+            )}
           </motion.div>
         </motion.div>
       </div>

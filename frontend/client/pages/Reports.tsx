@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   BarChart,
@@ -18,12 +18,13 @@ import {
 import { Calendar, TrendingUp, PieChartIcon, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  getWeeklyTrendData,
-  getMonthlyTrendData,
-  getCategoryDistribution,
-  getDepartmentRankings,
-  getDashboardStats,
-} from "@/lib/mockData";
+  api,
+  CategoryDistribution,
+  DashboardStats,
+  DepartmentRanking,
+  MonthlyTrend,
+  WeeklyTrend,
+} from "@/lib/api";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -40,14 +41,54 @@ const itemVariants = {
 
 type TimeRange = "weekly" | "monthly";
 
+const defaultDashboardStats: DashboardStats = {
+  totalTasks: 0,
+  totalTasksTrend: "0% from last month",
+  mostFrequentIssue: "N/A",
+  mostFrequentIssueCount: 0,
+  topDepartment: "N/A",
+  topDepartmentReports: 0,
+  pending: 0,
+  inProgress: 0,
+  completed: 0,
+  completionRate: 0,
+  avgResponseTime: "N/A",
+  dailyAverage: 0,
+  resolutionRate: "0%",
+  customerSatisfaction: "N/A",
+};
+
 export default function Reports() {
   const [timeRange, setTimeRange] = useState<TimeRange>("weekly");
+  const [weeklyData, setWeeklyData] = useState<WeeklyTrend[]>([]);
+  const [monthlyData, setMonthlyData] = useState<MonthlyTrend[]>([]);
+  const [categoryData, setCategoryData] = useState<CategoryDistribution[]>([]);
+  const [departmentData, setDepartmentData] = useState<DepartmentRanking[]>([]);
+  const [stats, setStats] = useState<DashboardStats>(defaultDashboardStats);
 
-  const weeklyData = getWeeklyTrendData();
-  const monthlyData = getMonthlyTrendData();
-  const categoryData = getCategoryDistribution();
-  const departmentData = getDepartmentRankings();
-  const stats = getDashboardStats();
+  useEffect(() => {
+    const fetchReportData = async () => {
+      try {
+        const [weeklyTrendData, monthlyTrendData, categoryDistributionData, departmentRankingsData, dashboardStats] = await Promise.all([
+          api.getWeeklyTrends(),
+          api.getMonthlyTrends(),
+          api.getCategoryDistribution(),
+          api.getDepartmentRankings(),
+          api.getDashboardStats(),
+        ]);
+
+        setWeeklyData(weeklyTrendData);
+        setMonthlyData(monthlyTrendData);
+        setCategoryData(categoryDistributionData);
+        setDepartmentData(departmentRankingsData);
+        setStats(dashboardStats);
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    fetchReportData();
+  }, []);
 
   const trendData = timeRange === "weekly" ? weeklyData : monthlyData;
   const trendXKey = timeRange === "weekly" ? "day" : "month";
@@ -80,7 +121,7 @@ export default function Reports() {
 
   // Calculate completion rate for display
   const completionRate = Math.round(
-    (stats.completed / stats.totalTasks) * 100
+    stats.totalTasks > 0 ? (stats.completed / stats.totalTasks) * 100 : 0
   );
 
   return (
@@ -405,8 +446,10 @@ export default function Reports() {
                 <p className="text-sm text-foreground">
                   <span className="font-semibold">Insight:</span>{" "}
                   <span className="text-muted-foreground">
-                    Printer issues account for {categoryData[0].percentage}% of all
-                    tasks. Consider hardware upgrade or preventive maintenance program.
+                    {categoryData.length > 0
+                      ? `${categoryData[0].category} issues account for ${categoryData[0].percentage}% of all tasks.`
+                      : "No category data available yet."}{" "}
+                    Consider preventive maintenance for top recurring issues.
                   </span>
                 </p>
               </div>

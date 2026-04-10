@@ -11,7 +11,7 @@
 - Free tier ($0/month)
 - PostgreSQL databases free
 - GitHub Actions integration
-- *Note: Spins down after 15 min inactivity*
+- *Note: Spins down afte\r 15 min inactivity*
 
 ### 3. **Neon** (Database)
 - Free PostgreSQL tier

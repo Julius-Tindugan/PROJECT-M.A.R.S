@@ -15,10 +15,10 @@ import { ThemeSwitcher } from "./ThemeSwitcher";
 
 const navigationItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Quick Log", href: "/quick-log", icon: Monitor },
+  { label: "Record Task", href: "/record-task", icon: Monitor },
   { label: "Task Logs", href: "/task-logs", icon: FileText },
   { label: "Reports", href: "/reports", icon: PieChart },
-  { label: "Rankings", href: "/rankings", icon: BarChart3 },
+  { label: "KPI Analytics", href: "/rankings", icon: BarChart3 },
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 

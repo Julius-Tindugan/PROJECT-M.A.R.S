@@ -15,25 +15,15 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
-  loadDepartments,
-  loadCategories,
-  loadStaff,
-  addDepartment,
-  updateDepartment,
-  deleteDepartment,
-  addCategory,
-  updateCategory,
-  deleteCategory,
-  addStaff,
-  updateStaff,
-  deleteStaff,
-  resetToDefaults,
-} from "@/lib/mockData";
+  api,
+  MetadataItem,
+  MetadataType,
+} from "@/lib/api";
 
-type TabType = "departments" | "categories" | "staff";
+type TabType = MetadataType;
 
 interface EditingItem {
-  index: number;
+  id: number;
   value: string;
 }
 
@@ -58,12 +48,12 @@ const itemVariants = {
 
 export default function Settings() {
   const [activeTab, setActiveTab] = useState<TabType>("departments");
-  const [departments, setDepartments] = useState<string[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [staff, setStaff] = useState<string[]>([]);
+  const [departments, setDepartments] = useState<MetadataItem[]>([]);
+  const [categories, setCategories] = useState<MetadataItem[]>([]);
+  const [staff, setStaff] = useState<MetadataItem[]>([]);
   const [newItem, setNewItem] = useState("");
   const [editingItem, setEditingItem] = useState<EditingItem | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
 
   // Load data on mount
@@ -71,13 +61,24 @@ export default function Settings() {
     refreshData();
   }, []);
 
-  const refreshData = () => {
-    setDepartments(loadDepartments());
-    setCategories(loadCategories());
-    setStaff(loadStaff());
+  const refreshData = async () => {
+    try {
+      const [departmentData, categoryData, staffData] = await Promise.all([
+        api.getMetadata("departments"),
+        api.getMetadata("categories"),
+        api.getMetadata("staff"),
+      ]);
+
+      setDepartments(departmentData);
+      setCategories(categoryData);
+      setStaff(staffData);
+    } catch (error) {
+      console.error(error);
+      toast.error("Failed to load settings data");
+    }
   };
 
-  const getCurrentData = (): string[] => {
+  const getCurrentData = (): MetadataItem[] => {
     switch (activeTab) {
       case "departments":
         return departments;
@@ -110,90 +111,65 @@ export default function Settings() {
     }
   };
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newItem.trim()) {
       toast.error("Name cannot be empty");
       return;
     }
 
-    let result;
-    switch (activeTab) {
-      case "departments":
-        result = addDepartment(newItem);
-        break;
-      case "categories":
-        result = addCategory(newItem);
-        break;
-      case "staff":
-        result = addStaff(newItem);
-        break;
-    }
+    try {
+      const result = await api.createMetadata(activeTab, newItem.trim());
 
-    if (result.success) {
       toast.success(result.message);
       refreshData();
       setNewItem("");
       setIsAddingNew(false);
-    } else {
-      toast.error(result.message);
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Failed to add entry");
     }
   };
 
-  const handleUpdate = (oldName: string) => {
+  const handleUpdate = async () => {
     if (!editingItem || !editingItem.value.trim()) {
       toast.error("Name cannot be empty");
       return;
     }
 
-    let result;
-    switch (activeTab) {
-      case "departments":
-        result = updateDepartment(oldName, editingItem.value);
-        break;
-      case "categories":
-        result = updateCategory(oldName, editingItem.value);
-        break;
-      case "staff":
-        result = updateStaff(oldName, editingItem.value);
-        break;
-    }
+    try {
+      const result = await api.updateMetadata(activeTab, editingItem.id, editingItem.value.trim());
 
-    if (result.success) {
       toast.success(result.message);
       refreshData();
       setEditingItem(null);
-    } else {
-      toast.error(result.message);
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Failed to update entry");
     }
   };
 
-  const handleDelete = (name: string) => {
-    let result;
-    switch (activeTab) {
-      case "departments":
-        result = deleteDepartment(name);
-        break;
-      case "categories":
-        result = deleteCategory(name);
-        break;
-      case "staff":
-        result = deleteStaff(name);
-        break;
-    }
+  const handleDelete = async (id: number) => {
+    try {
+      const result = await api.deleteMetadata(activeTab, id);
 
-    if (result.success) {
       toast.success(result.message);
       refreshData();
       setDeleteConfirm(null);
-    } else {
-      toast.error(result.message);
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Failed to delete entry");
     }
   };
 
-  const handleReset = () => {
-    resetToDefaults();
-    refreshData();
-    toast.success("All data reset to defaults");
+  const handleReset = async () => {
+    try {
+      const result = await api.resetMetadata();
+      refreshData();
+      toast.success(result.message);
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Failed to reset metadata");
+    }
   };
 
   const tabs: TabType[] = ["departments", "categories", "staff"];
@@ -373,11 +349,11 @@ export default function Settings() {
               >
                 {getCurrentData().map((item, index) => (
                   <motion.div
-                    key={`${activeTab}-${item}`}
+                    key={`${activeTab}-${item.id}`}
                     variants={itemVariants}
                     className={cn(
                       "flex items-center gap-3 p-4 hover:bg-muted/30 transition-colors",
-                      deleteConfirm === item && "bg-red-50 dark:bg-red-950/20"
+                      deleteConfirm === item.id && "bg-red-50 dark:bg-red-950/20"
                     )}
                   >
                     {/* Index Badge */}
@@ -386,7 +362,7 @@ export default function Settings() {
                     </div>
 
                     {/* Content */}
-                    {editingItem?.index === index ? (
+                    {editingItem?.id === item.id ? (
                       // Edit Mode
                       <div className="flex-1 flex items-center gap-3">
                         <input
@@ -396,7 +372,7 @@ export default function Settings() {
                             setEditingItem({ ...editingItem, value: e.target.value })
                           }
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") handleUpdate(item);
+                            if (e.key === "Enter") handleUpdate();
                             if (e.key === "Escape") setEditingItem(null);
                           }}
                           autoFocus
@@ -406,7 +382,7 @@ export default function Settings() {
                           )}
                         />
                         <button
-                          onClick={() => handleUpdate(item)}
+                          onClick={() => handleUpdate()}
                           className="p-2 rounded-lg bg-green-500 text-white hover:bg-green-600 transition-colors"
                         >
                           <Check className="w-4 h-4" />
@@ -418,15 +394,15 @@ export default function Settings() {
                           <X className="w-4 h-4" />
                         </button>
                       </div>
-                    ) : deleteConfirm === item ? (
+                    ) : deleteConfirm === item.id ? (
                       // Delete Confirmation Mode
                       <div className="flex-1 flex items-center justify-between">
                         <span className="text-red-600 dark:text-red-400 font-medium">
-                          Delete "{item}"?
+                          Delete "{item.name}"?
                         </span>
                         <div className="flex items-center gap-2">
                           <button
-                            onClick={() => handleDelete(item)}
+                            onClick={() => handleDelete(item.id)}
                             className="px-3 py-1.5 rounded-lg bg-red-500 text-white text-sm font-medium hover:bg-red-600 transition-colors"
                           >
                             Confirm
@@ -443,18 +419,18 @@ export default function Settings() {
                       // View Mode
                       <>
                         <span className="flex-1 text-foreground font-medium">
-                          {item}
+                          {item.name}
                         </span>
                         <div className="flex items-center gap-1">
                           <button
-                            onClick={() => setEditingItem({ index, value: item })}
+                            onClick={() => setEditingItem({ id: item.id, value: item.name })}
                             className="p-2 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
                             title="Edit"
                           >
                             <Pencil className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => setDeleteConfirm(item)}
+                            onClick={() => setDeleteConfirm(item.id)}
                             className="p-2 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors"
                             title="Delete"
                           >
@@ -514,7 +490,7 @@ export default function Settings() {
             className="mt-6 p-4 rounded-lg bg-primary/5 border border-primary/20"
           >
             <p className="text-sm text-muted-foreground">
-              <span className="font-semibold text-foreground">Note:</span> Changes are saved automatically to your browser's local storage.
+              <span className="font-semibold text-foreground">Note:</span> Changes are saved in your backend database.
               Use the "Reset to Defaults" button to restore the original data if needed.
             </p>
           </motion.div>

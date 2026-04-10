@@ -1,25 +1,37 @@
-import { motion, AnimatePresence } from "framer-motion";
-import { X, Clock, User, Calendar, FileText } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  CalendarDays,
+  Clock,
+  FileText,
+  Loader2,
+  Sparkles,
+  User,
+} from "lucide-react";
 import { toast } from "sonner";
+
 import { cn } from "@/lib/utils";
 import {
-  loadDepartments,
-  loadCategories,
-  loadStaff,
-  loadTasks,
-  saveTasks,
-  generateTaskId,
+  api,
   calculateDuration,
   Task,
-  TaskStatus,
   TaskPriority,
-} from "@/lib/mockData";
+  TaskStatus,
+} from "@/lib/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface RecordTaskModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onTaskRecorded?: (task: Task) => void;
 }
+
+type SubmitMode = "record" | "recordAndNew";
 
 const initialFormState = {
   description: "",
@@ -34,24 +46,63 @@ const initialFormState = {
   remarks: "",
 };
 
-export function RecordTaskModal({ isOpen, onClose }: RecordTaskModalProps) {
+const requiredFields = ["description", "department", "category", "staffName"] as const;
+
+export function RecordTaskModal({ isOpen, onClose, onTaskRecorded }: RecordTaskModalProps) {
   const [formData, setFormData] = useState(initialFormState);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitMode, setSubmitMode] = useState<SubmitMode>("record");
+  const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [departments, setDepartments] = useState<string[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [staffList, setStaffList] = useState<string[]>([]);
 
-  // Load dynamic data and reset form when modal opens
+  const requiredFieldsCompleted = useMemo(() => {
+    return requiredFields.filter((field) => {
+      const value = formData[field];
+      return typeof value === "string" && value.trim().length > 0;
+    }).length;
+  }, [formData]);
+
+  const completionPercent = Math.round((requiredFieldsCompleted / requiredFields.length) * 100);
+  const canSubmit = requiredFieldsCompleted === requiredFields.length && !isSubmitting && !isLoadingMetadata;
+  const duration = calculateDuration(formData.startTime, formData.endTime);
+
+  const resetForm = () => {
+    setFormData({
+      ...initialFormState,
+      date: new Date().toISOString().split("T")[0],
+    });
+  };
+
   useEffect(() => {
-    if (isOpen) {
-      setDepartments(loadDepartments());
-      setCategories(loadCategories());
-      setStaffList(loadStaff());
-      setFormData({
-        ...initialFormState,
-        date: new Date().toISOString().split("T")[0],
-      });
+    if (!isOpen) {
+      return;
     }
+
+    const fetchMetadata = async () => {
+      setIsLoadingMetadata(true);
+
+      try {
+        const [departmentData, categoryData, staffData] = await Promise.all([
+          api.getDepartments(),
+          api.getCategories(),
+          api.getStaff(),
+        ]);
+
+        setDepartments(departmentData);
+        setCategories(categoryData);
+        setStaffList(staffData);
+        resetForm();
+      } catch (error) {
+        console.error(error);
+        toast.error("Failed to load task form data");
+      } finally {
+        setIsLoadingMetadata(false);
+      }
+    };
+
+    fetchMetadata();
   }, [isOpen]);
 
   const handleChange = (
@@ -61,22 +112,24 @@ export function RecordTaskModal({ isOpen, onClose }: RecordTaskModalProps) {
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
+  const handleModalOpenChange = (open: boolean) => {
+    if (!open && !isSubmitting) {
+      onClose();
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Validate required fields
-    if (!formData.description || !formData.department || !formData.category || !formData.staffName) {
-      toast.error("Please fill in all required fields");
+    if (!canSubmit) {
+      toast.error("Please complete all required fields before submitting");
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-
-      const newTask: Task = {
-        id: generateTaskId(),
+      const response = await api.createTask({
         description: formData.description,
         department: formData.department,
         category: formData.category,
@@ -84,146 +137,146 @@ export function RecordTaskModal({ isOpen, onClose }: RecordTaskModalProps) {
         priority: formData.priority,
         status: formData.status,
         date: formData.date,
-        startTime: formData.startTime,
-        endTime: formData.endTime,
-        remarks: formData.remarks,
-        createdAt: new Date().toISOString(),
-      };
+        startTime: formData.startTime || undefined,
+        endTime: formData.endTime || undefined,
+        remarks: formData.remarks || undefined,
+      });
 
-      const tasks = loadTasks();
-      tasks.unshift(newTask);
-      saveTasks(tasks);
+      onTaskRecorded?.(response.task);
 
-      toast.success(`Task ${newTask.id} recorded successfully!`);
+      if (submitMode === "recordAndNew") {
+        toast.success(`Task ${response.task.id} recorded. Ready for your next entry.`);
+        resetForm();
+        return;
+      }
+
+      toast.success(`Task ${response.task.id} recorded successfully!`);
       onClose();
     } catch (error) {
-      toast.error("Failed to record task");
       console.error(error);
+      toast.error(error instanceof Error ? error.message : "Failed to record task");
     } finally {
       setIsSubmitting(false);
+      setSubmitMode("record");
     }
   };
 
-  const duration = calculateDuration(formData.startTime, formData.endTime);
-
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <>
-          {/* Backdrop */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-            className="fixed inset-0 bg-black/50 z-40"
-          />
+    <Dialog open={isOpen} onOpenChange={handleModalOpenChange}>
+      <DialogContent className="max-h-[92vh] max-w-4xl overflow-hidden p-0 sm:rounded-xl">
+        <DialogHeader className="border-b border-border px-6 py-5 text-left">
+          <div className="flex items-start gap-3">
+            <div className="rounded-lg bg-primary/10 p-2.5">
+              <FileText className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <DialogTitle className="text-xl text-foreground">Record New Task</DialogTitle>
+              <DialogDescription className="mt-1">
+                Capture maintenance details quickly with required field guidance.
+              </DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
 
-          {/* Modal */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            transition={{ duration: 0.2 }}
-            className="fixed inset-0 flex items-center justify-center p-4 z-50"
-          >
-            <div className="bg-card rounded-xl shadow-2xl max-w-2xl w-full border border-border max-h-[90vh] overflow-auto">
-              {/* Header */}
-              <div className="flex items-center justify-between p-5 border-b border-border sticky top-0 bg-card z-10">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-primary/10">
-                    <FileText className="w-5 h-5 text-primary" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-foreground">
-                      Record New Task
-                    </h2>
-                    <p className="text-sm text-muted-foreground">
-                      Log IT maintenance activity
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={onClose}
-                  className="p-2 hover:bg-muted rounded-lg transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+        <form onSubmit={handleSubmit} className="flex max-h-[calc(92vh-84px)] flex-col">
+          <div className="space-y-5 overflow-y-auto px-6 py-5">
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+              <div className="flex items-center justify-between gap-3 text-xs font-medium text-foreground">
+                <p className="flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5 text-primary" />
+                  Form progress
+                </p>
+                <p>
+                  {requiredFieldsCompleted}/{requiredFields.length} required fields complete
+                </p>
               </div>
+              <div className="mt-2 h-1.5 rounded-full bg-primary/15">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-300"
+                  style={{ width: `${completionPercent}%` }}
+                />
+              </div>
+            </div>
 
-              {/* Form */}
-              <form onSubmit={handleSubmit} className="p-5 space-y-4">
-                {/* 1. Description */}
+            <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+              <h3 className="text-sm font-semibold text-foreground">Task Summary</h3>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-foreground">
+                  Description <span className="text-destructive">*</span>
+                </label>
+                <textarea
+                  name="description"
+                  value={formData.description}
+                  onChange={handleChange}
+                  placeholder="What happened and what was done to fix it?"
+                  rows={4}
+                  className={cn(
+                    "w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground",
+                    "resize-none transition-all placeholder:text-muted-foreground",
+                    "focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary"
+                  )}
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Add enough context so other staff can continue the work if needed.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+              <h3 className="text-sm font-semibold text-foreground">Assignment</h3>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1.5">
-                    Description <span className="text-destructive">*</span>
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">
+                    Department <span className="text-destructive">*</span>
                   </label>
-                  <textarea
-                    name="description"
-                    value={formData.description}
+                  <select
+                    name="department"
+                    value={formData.department}
                     onChange={handleChange}
-                    placeholder="Describe the issue and the fix applied..."
-                    rows={3}
+                    disabled={isLoadingMetadata}
                     className={cn(
-                      "w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm",
-                      "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all",
-                      "resize-none placeholder:text-muted-foreground"
+                      "w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground",
+                      "transition-all focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary",
+                      "disabled:cursor-not-allowed disabled:opacity-60"
                     )}
-                  />
+                  >
+                    <option value="">Select Department</option>
+                    {departments.map((department) => (
+                      <option key={department} value={department}>
+                        {department}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
-                {/* 2. Department & 3. Category - Row */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-foreground mb-1.5">
-                      Department <span className="text-destructive">*</span>
-                    </label>
-                    <select
-                      name="department"
-                      value={formData.department}
-                      onChange={handleChange}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm",
-                        "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                      )}
-                    >
-                      <option value="">Select Department</option>
-                      {departments.map((dept) => (
-                        <option key={dept} value={dept}>
-                          {dept}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-foreground mb-1.5">
-                      Category <span className="text-destructive">*</span>
-                    </label>
-                    <select
-                      name="category"
-                      value={formData.category}
-                      onChange={handleChange}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm",
-                        "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                      )}
-                    >
-                      <option value="">Select Category</option>
-                      {categories.map((cat) => (
-                        <option key={cat} value={cat}>
-                          {cat}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* 4. Staff Name */}
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1.5">
-                    <span className="flex items-center gap-1.5">
-                      <User className="w-4 h-4" />
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">
+                    Category <span className="text-destructive">*</span>
+                  </label>
+                  <select
+                    name="category"
+                    value={formData.category}
+                    onChange={handleChange}
+                    disabled={isLoadingMetadata}
+                    className={cn(
+                      "w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground",
+                      "transition-all focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary",
+                      "disabled:cursor-not-allowed disabled:opacity-60"
+                    )}
+                  >
+                    <option value="">Select Category</option>
+                    {categories.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      <User className="h-4 w-4" />
                       Staff Name <span className="text-destructive">*</span>
                     </span>
                   </label>
@@ -231,9 +284,11 @@ export function RecordTaskModal({ isOpen, onClose }: RecordTaskModalProps) {
                     name="staffName"
                     value={formData.staffName}
                     onChange={handleChange}
+                    disabled={isLoadingMetadata}
                     className={cn(
-                      "w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm",
-                      "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                      "w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground",
+                      "transition-all focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary",
+                      "disabled:cursor-not-allowed disabled:opacity-60"
                     )}
                   >
                     <option value="">Select Staff</option>
@@ -244,189 +299,211 @@ export function RecordTaskModal({ isOpen, onClose }: RecordTaskModalProps) {
                     ))}
                   </select>
                 </div>
+              </div>
+            </div>
 
-                {/* 5. Priority & 6. Status - Row */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-foreground mb-1.5">
-                      Priority
-                    </label>
-                    <div className="grid grid-cols-4 gap-1.5">
-                      {(["Low", "Medium", "High", "Critical"] as TaskPriority[]).map(
-                        (priority) => (
-                          <button
-                            key={priority}
-                            type="button"
-                            onClick={() =>
-                              setFormData((prev) => ({ ...prev, priority }))
-                            }
-                            className={cn(
-                              "px-2 py-2 rounded-lg text-xs font-medium transition-all border",
-                              formData.priority === priority
-                                ? priority === "Critical"
-                                  ? "bg-red-500 text-white border-red-500"
-                                  : priority === "High"
-                                  ? "bg-orange-500 text-white border-orange-500"
-                                  : priority === "Medium"
-                                  ? "bg-primary text-primary-foreground border-primary"
-                                  : "bg-green-500 text-white border-green-500"
-                                : "bg-background text-foreground border-input hover:border-primary/50"
-                            )}
-                          >
-                            {priority}
-                          </button>
-                        )
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+                <h3 className="text-sm font-semibold text-foreground">Priority</h3>
+                <div className="grid grid-cols-2 gap-2">
+                  {(["Low", "Medium", "High", "Critical"] as TaskPriority[]).map((priority) => (
+                    <button
+                      key={priority}
+                      type="button"
+                      onClick={() => setFormData((prev) => ({ ...prev, priority }))}
+                      className={cn(
+                        "rounded-lg border px-3 py-2 text-xs font-semibold transition-all",
+                        formData.priority === priority
+                          ? priority === "Critical"
+                            ? "border-red-500 bg-red-500 text-white"
+                            : priority === "High"
+                            ? "border-orange-500 bg-orange-500 text-white"
+                            : priority === "Medium"
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-emerald-500 bg-emerald-500 text-white"
+                          : "border-input bg-background text-foreground hover:border-primary/40"
                       )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-foreground mb-1.5">
-                      Status
-                    </label>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {(["Pending", "In Progress", "Completed"] as TaskStatus[]).map(
-                        (status) => (
-                          <button
-                            key={status}
-                            type="button"
-                            onClick={() =>
-                              setFormData((prev) => ({ ...prev, status }))
-                            }
-                            className={cn(
-                              "px-2 py-2 rounded-lg text-xs font-medium transition-all border",
-                              formData.status === status
-                                ? status === "Completed"
-                                  ? "bg-green-500 text-white border-green-500"
-                                  : status === "In Progress"
-                                  ? "bg-blue-500 text-white border-blue-500"
-                                  : "bg-primary text-primary-foreground border-primary"
-                                : "bg-background text-foreground border-input hover:border-primary/50"
-                            )}
-                          >
-                            {status}
-                          </button>
-                        )
-                      )}
-                    </div>
-                  </div>
+                    >
+                      {priority}
+                    </button>
+                  ))}
                 </div>
+              </div>
 
-                {/* 7. Date & 8. Start Time & 9. End Time - Row */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-foreground mb-1.5">
-                      <span className="flex items-center gap-1.5">
-                        <Calendar className="w-4 h-4" />
-                        Date
-                      </span>
-                    </label>
-                    <input
-                      type="date"
-                      name="date"
-                      value={formData.date}
-                      onChange={handleChange}
+              <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+                <h3 className="text-sm font-semibold text-foreground">Status</h3>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  {(["Pending", "In Progress", "Completed"] as TaskStatus[]).map((status) => (
+                    <button
+                      key={status}
+                      type="button"
+                      onClick={() => setFormData((prev) => ({ ...prev, status }))}
                       className={cn(
-                        "w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm",
-                        "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                        "rounded-lg border px-3 py-2 text-xs font-semibold transition-all",
+                        formData.status === status
+                          ? status === "Completed"
+                            ? "border-emerald-500 bg-emerald-500 text-white"
+                            : status === "In Progress"
+                            ? "border-blue-500 bg-blue-500 text-white"
+                            : "border-primary bg-primary text-primary-foreground"
+                          : "border-input bg-background text-foreground hover:border-primary/40"
                       )}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-foreground mb-1.5">
-                      <span className="flex items-center gap-1.5">
-                        <Clock className="w-4 h-4" />
-                        Start Time
-                      </span>
-                    </label>
-                    <input
-                      type="time"
-                      name="startTime"
-                      value={formData.startTime}
-                      onChange={handleChange}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm",
-                        "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                      )}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-foreground mb-1.5">
-                      <span className="flex items-center gap-1.5">
-                        <Clock className="w-4 h-4" />
-                        End Time
-                      </span>
-                    </label>
-                    <input
-                      type="time"
-                      name="endTime"
-                      value={formData.endTime}
-                      onChange={handleChange}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm",
-                        "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                      )}
-                    />
-                  </div>
+                    >
+                      {status}
+                    </button>
+                  ))}
                 </div>
+              </div>
+            </div>
 
-                {/* Duration Display */}
-                {formData.startTime && formData.endTime && (
-                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
-                    <Clock className="w-4 h-4 text-primary" />
-                    <span className="text-sm text-foreground">
-                      Duration: <span className="font-semibold text-primary">{duration}</span>
-                    </span>
-                  </div>
-                )}
-
-                {/* 10. Remarks */}
+            <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+              <h3 className="text-sm font-semibold text-foreground">Schedule</h3>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1.5">
-                    Remarks
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      <CalendarDays className="h-4 w-4" />
+                      Date
+                    </span>
                   </label>
-                  <textarea
-                    name="remarks"
-                    value={formData.remarks}
+                  <input
+                    type="date"
+                    name="date"
+                    value={formData.date}
                     onChange={handleChange}
-                    placeholder="Additional notes or observations..."
-                    rows={2}
                     className={cn(
-                      "w-full px-3 py-2.5 rounded-lg border border-input bg-background text-foreground text-sm",
-                      "focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all",
-                      "resize-none placeholder:text-muted-foreground"
+                      "w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground",
+                      "transition-all focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary"
                     )}
                   />
                 </div>
 
-                {/* Buttons */}
-                <div className="flex gap-3 pt-3 border-t border-border">
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="flex-1 px-4 py-2.5 rounded-lg border border-input text-foreground hover:bg-muted transition-colors font-medium text-sm"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Clock className="h-4 w-4" />
+                      Start Time
+                    </span>
+                  </label>
+                  <input
+                    type="time"
+                    name="startTime"
+                    value={formData.startTime}
+                    onChange={handleChange}
                     className={cn(
-                      "flex-1 px-4 py-2.5 rounded-lg font-medium transition-all text-sm",
-                      "bg-primary text-primary-foreground hover:bg-primary/90",
-                      "disabled:opacity-50 disabled:cursor-not-allowed"
+                      "w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground",
+                      "transition-all focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary"
                     )}
-                  >
-                    {isSubmitting ? "Recording..." : "Record Task"}
-                  </button>
+                  />
                 </div>
-              </form>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Clock className="h-4 w-4" />
+                      End Time
+                    </span>
+                  </label>
+                  <input
+                    type="time"
+                    name="endTime"
+                    value={formData.endTime}
+                    onChange={handleChange}
+                    className={cn(
+                      "w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground",
+                      "transition-all focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary"
+                    )}
+                  />
+                </div>
+              </div>
+
+              {formData.startTime && formData.endTime && (
+                <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-foreground">
+                  <Clock className="h-4 w-4 text-primary" />
+                  Duration: <span className="font-semibold text-primary">{duration}</span>
+                </div>
+              )}
             </div>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>
+
+            <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+              <h3 className="text-sm font-semibold text-foreground">Additional Notes</h3>
+              <textarea
+                name="remarks"
+                value={formData.remarks}
+                onChange={handleChange}
+                placeholder="Add extra context, blockers, or follow-up notes"
+                rows={3}
+                className={cn(
+                  "w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground",
+                  "resize-none transition-all placeholder:text-muted-foreground",
+                  "focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary"
+                )}
+              />
+            </div>
+          </div>
+
+          <div className="border-t border-border bg-background/95 px-6 py-4 backdrop-blur">
+            <div className="flex flex-col gap-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+              <span className="inline-flex items-center gap-1.5">
+                <CalendarDays className="h-3.5 w-3.5" />
+                Required fields must be completed before recording.
+              </span>
+
+              {isLoadingMetadata && (
+                <span className="inline-flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Loading department, category, and staff options...
+                </span>
+              )}
+            </div>
+
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={isSubmitting}
+                className={cn(
+                  "rounded-lg border border-input px-4 py-2.5 text-sm font-medium text-foreground transition-colors",
+                  "hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                )}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                onClick={() => setSubmitMode("recordAndNew")}
+                className={cn(
+                  "rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm font-medium text-primary transition-all",
+                  "hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
+                )}
+              >
+                {isSubmitting && submitMode === "recordAndNew" ? "Saving..." : "Save & New"}
+              </button>
+
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                onClick={() => setSubmitMode("record")}
+                className={cn(
+                  "inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-all",
+                  "hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                )}
+              >
+                {isSubmitting && submitMode === "record" ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Recording...
+                  </>
+                ) : (
+                  "Record Task"
+                )}
+              </button>
+            </div>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
